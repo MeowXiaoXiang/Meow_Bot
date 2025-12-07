@@ -1,0 +1,22 @@
+services:
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: meow_bot-discord-bot
+    container_name: discord-bot
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+    restart: unless-stopped
+    tty: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,7 @@
+discord.py
+loguru
+PyNaCl
+yt-dlp
+pillow
+aiohttp
+python-dotenv
