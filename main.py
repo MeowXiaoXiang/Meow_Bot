@@ -5,15 +5,10 @@ from loguru import logger
 from datetime import datetime
 from typing import List
 
-import asyncio
 import os
 import sys
 import traceback
 from dotenv import load_dotenv
-
-# Windows 服務需要正確的事件循環策略
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 version = "v1.1"
 start_time = datetime.now()

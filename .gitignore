@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# music_player
+module/music_player/ffmpeg/bin/
+temp/
+
 # Distribution / packaging
 .Python
 build/

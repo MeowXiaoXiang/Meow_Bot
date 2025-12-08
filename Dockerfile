@@ -6,7 +6,18 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libopus0 \
     libopus-dev \
+    curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# 安裝 Deno（供 yt-dlp 使用）
+RUN (curl -fsSL https://deno.land/x/install/install.sh | sh) \
+    || (echo "deno.land 失敗，切換到 GitHub Release..." \
+    && curl -L "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip" -o deno.zip \
+    && unzip deno.zip \
+    && mv deno /usr/local/bin/deno \
+    && chmod +x /usr/local/bin/deno \
+    && rm deno.zip)
 
 # 設定工作目錄
 WORKDIR /app

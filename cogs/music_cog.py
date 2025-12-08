@@ -42,6 +42,8 @@ from module.music_player import (
     YTDLP_UPDATE_INTERVAL,
     MANUAL_OPERATION_DEBOUNCE,
     EMBED_UPDATE_INTERVAL,
+    VOICE_CONNECT_MAX_RETRIES,
+    VOICE_CONNECT_RETRY_DELAY,
 )
 
 # -------------------- Other --------------------
@@ -80,6 +82,9 @@ class MusicPlayerCog(commands.Cog):
         
         # yt-dlp 更新檢查
         self.last_yt_dlp_check: float | None = None
+        
+        # 播放鎖（防止競爭條件）
+        self._play_lock = asyncio.Lock()
         
         # 背景任務
         self.update_embed_task = self.update_embed
@@ -125,7 +130,17 @@ class MusicPlayerCog(commands.Cog):
         
         只在歌曲自然播放完畢時觸發，手動停止不會觸發
         """
+        # 檢查是否正在關閉播放器
+        if self.manual_disconnect:
+            logger.debug("[MusicPlayerCog] 歌曲結束，但正在關閉播放器，忽略")
+            return
+        
         if not self.player:
+            return
+        
+        # 檢查是否已連接語音頻道
+        if not self.player.is_connected:
+            logger.debug("[MusicPlayerCog] 歌曲結束，但未連接語音頻道，忽略")
             return
         
         logger.debug("[MusicPlayerCog] 歌曲自然結束，準備處理下一首")
@@ -145,47 +160,75 @@ class MusicPlayerCog(commands.Cog):
             await self._show_error(e.user_message)
     
     async def _play_next_song(self):
-        """播放下一首歌曲"""
+        """播放下一首歌曲（包含失敗重試邏輯）"""
         if not self.player:
             return
         
         queue = self.player.queue
+        max_retries = 5  # 最多嘗試 5 首，避免無限迴圈
         
-        # 檢查佇列是否為空
-        if len(queue) == 0:
-            logger.debug("佇列為空，停止播放")
-            await self._show_empty_queue()
-            return
+        for _ in range(max_retries):
+            # 檢查佇列是否為空
+            if len(queue) == 0:
+                logger.debug("佇列為空，停止播放")
+                await self._show_empty_queue()
+                return
+            
+            # 嘗試切換到下一首
+            next_song = queue.next()
+            
+            if next_song is None:
+                # 沒有下一首（非循環模式且已到底）
+                logger.debug("已到達佇列末尾，停止播放")
+                current_song = queue.current
+                if current_song:
+                    embed = self.embed_builder.playing_embed(
+                        song=current_song,
+                        is_looping=queue.loop,
+                        is_playing=False,
+                        current_time=0,
+                    )
+                    await self._update_player_message(embed)
+                return
+            
+            # 嘗試播放
+            success = await self._play_song(next_song)
+            if success:
+                return  # 成功播放，結束
+            
+            # 失敗，繼續嘗試下一首
+            logger.debug(f"歌曲 {next_song.title} 播放失敗，嘗試下一首")
         
-        # 嘗試切換到下一首
-        next_song = queue.next()
-        
-        if next_song is None:
-            # 沒有下一首（非循環模式且已到底）
-            logger.debug("已到達佇列末尾，停止播放")
-            current_song = queue.current
-            if current_song:
-                embed = self.embed_builder.playing_embed(
-                    song=current_song,
-                    is_looping=queue.loop,
-                    is_playing=False,
-                    current_time=0,
-                )
-                await self._update_player_message(embed)
-            return
-        
-        # 播放下一首
-        await self._play_song(next_song)
+        # 連續失敗太多次
+        logger.error(f"連續 {max_retries} 首歌曲播放失敗")
+        await self._show_error("連續多首歌曲無法播放，請檢查網路連線")
     
-    async def _play_song(self, song: Song):
+    async def _play_song(self, song: Song) -> bool:
         """
         播放指定歌曲
         
         Args:
             song: 要播放的歌曲
+        
+        Returns:
+            True 如果成功播放, False 如果失敗（呼叫者應嘗試下一首）
         """
         if not self.player:
-            return
+            return False
+        
+        # 使用鎖防止多個任務同時播放
+        async with self._play_lock:
+            return await self._play_song_internal(song)
+    
+    async def _play_song_internal(self, song: Song) -> bool:
+        """
+        播放歌曲的內部實現（不包含鎖，避免死鎖）
+        
+        Returns:
+            True 如果成功播放, False 如果失敗
+        """
+        if not self.player:
+            return False
         
         try:
             # 檢查快取，若無則下載
@@ -206,20 +249,24 @@ class MusicPlayerCog(commands.Cog):
                 # 加入快取
                 cache.put(song.id, str(file_path))
             
-            # 播放
-            await self.player.play(song)
+            # 播放（player.play 內部會觸發預載）
+            result = await self.player.play(song)
+            
+            if result is None:
+                # 下載失敗，移除歌曲
+                logger.warning(f"歌曲無法播放（player 返回 None）: {song.title}")
+                await self.player.queue.remove(song.id)
+                return False  # 告訴呼叫者失敗，由呼叫者決定是否嘗試下一首
             
             # 更新 UI
             await self._refresh_player_ui()
-            
-            # 觸發背景預載
-            asyncio.create_task(self._preload_upcoming())
+            return True
             
         except SongUnavailableError:
             logger.warning(f"歌曲無法播放: {song.title}")
-            # 從佇列移除並嘗試下一首
+            # 從佇列移除
             await self.player.queue.remove(song.id)
-            await self._play_next_song()
+            return False  # 告訴呼叫者失敗
     
     async def _preload_upcoming(self):
         """預載即將播放的歌曲"""
@@ -315,6 +362,7 @@ class MusicPlayerCog(commands.Cog):
                 await self._handle_loop()
             elif action == MusicPlayerView.ACTION_LEAVE:
                 await self._handle_leave()
+                return  # 離開後不需要更新 UI，_handle_leave 已處理
             
             # 更新 UI
             await self._refresh_player_ui()
@@ -339,34 +387,80 @@ class MusicPlayerCog(commands.Cog):
                 await self._play_song(current_song)
     
     async def _handle_next(self):
-        """處理下一首"""
+        """處理下一首（整個操作加鎖確保原子性）"""
         if not self.player:
             return
         
-        await self.player.stop()
-        self.player.state.mark_manual_operation()
-        
-        next_song = self.player.queue.next()
-        if next_song:
-            await self._play_song(next_song)
-        else:
-            # 非循環模式已到底，更新 UI 顯示停止狀態
-            await self._refresh_player_ui()
+        async with self._play_lock:
+            await self.player.stop()
+            self.player.state.mark_manual_operation()
+            
+            next_song = self.player.queue.next()
+            if next_song:
+                success = await self._play_song_internal(next_song)
+                if not success:
+                    # 失敗，嘗試下一首（在鎖內）
+                    await self._try_next_available_song()
+            else:
+                # 非循環模式已到底，更新 UI 顯示停止狀態
+                await self._refresh_player_ui()
     
     async def _handle_previous(self):
-        """處理上一首"""
+        """處理上一首（整個操作加鎖確保原子性）"""
         if not self.player:
             return
         
-        await self.player.stop()
-        self.player.state.mark_manual_operation()
+        async with self._play_lock:
+            await self.player.stop()
+            self.player.state.mark_manual_operation()
+            
+            prev_song = self.player.queue.previous()
+            if prev_song:
+                success = await self._play_song_internal(prev_song)
+                if not success:
+                    # 失敗，嘗試上一首（在鎖內）
+                    await self._try_previous_available_song()
+            else:
+                # 非循環模式已到頂，更新 UI 顯示停止狀態
+                await self._refresh_player_ui()
+    
+    async def _try_next_available_song(self):
+        """在鎖內嘗試找到下一首可播放的歌曲"""
+        max_retries = 5
+        for _ in range(max_retries):
+            if len(self.player.queue) == 0:
+                await self._show_empty_queue()
+                return
+            
+            next_song = self.player.queue.next()
+            if next_song is None:
+                await self._refresh_player_ui()
+                return
+            
+            success = await self._play_song_internal(next_song)
+            if success:
+                return
         
-        prev_song = self.player.queue.previous()
-        if prev_song:
-            await self._play_song(prev_song)
-        else:
-            # 非循環模式已到頂，更新 UI 顯示停止狀態
-            await self._refresh_player_ui()
+        await self._show_error("連續多首歌曲無法播放")
+    
+    async def _try_previous_available_song(self):
+        """在鎖內嘗試找到上一首可播放的歌曲"""
+        max_retries = 5
+        for _ in range(max_retries):
+            if len(self.player.queue) == 0:
+                await self._show_empty_queue()
+                return
+            
+            prev_song = self.player.queue.previous()
+            if prev_song is None:
+                await self._refresh_player_ui()
+                return
+            
+            success = await self._play_song_internal(prev_song)
+            if success:
+                return
+        
+        await self._show_error("連續多首歌曲無法播放")
     
     async def _handle_loop(self):
         """處理循環開關"""
@@ -435,9 +529,16 @@ class MusicPlayerCog(commands.Cog):
             response = await interaction.original_response()
             self.player_message = await response.channel.fetch_message(response.id)
             
-            # 連接語音頻道
+            # 連接語音頻道（帶重試）
             channel = interaction.user.voice.channel
-            voice_client = await channel.connect()
+            voice_client = await self._connect_voice_with_retry(channel)
+            
+            if voice_client is None:
+                await interaction.followup.send(
+                    "無法連接語音頻道，請稍後再試。（網路連線可能不穩定）"
+                )
+                return
+            
             self.last_voice_channel = channel
             self.manual_disconnect = False
             
@@ -638,7 +739,9 @@ class MusicPlayerCog(commands.Cog):
             
             # 如果目前沒有播放，開始播放
             if not self.player.is_playing:
-                self.player.queue._current_index = len(self.player.queue) - 1
+                # 使用 jump_to 跳到新增的歌曲（索引為佇列長度 - 1）
+                target_index = len(self.player.queue) - 1
+                self.player.queue.jump_to(target_index)
                 await self._play_song(song)
             
             # 更新按鈕
@@ -686,7 +789,9 @@ class MusicPlayerCog(commands.Cog):
             
             # 如果之前沒有播放，開始播放第一首新歌
             if was_empty and first_new_song:
-                self.player.queue._current_index = len(self.player.queue) - added_count
+                # 使用 jump_to 跳到第一首新歌的位置
+                target_index = len(self.player.queue) - added_count
+                self.player.queue.jump_to(target_index)
                 await self._play_song(first_new_song)
             
             # 更新按鈕
@@ -891,28 +996,36 @@ class MusicPlayerCog(commands.Cog):
             return
         
         try:
-            # 轉換為 0-based index
-            target_index = index - 1
-            
-            # 嘗試跳轉
-            song = self.player.queue.jump_to(target_index)
-            
-            if song is None:
-                await interaction.followup.send(
-                    f"找不到編號為 {index} 的歌曲（範圍：1-{len(self.player.queue)}）",
-                    ephemeral=True
-                )
-                return
-            
-            # 停止當前播放
-            await self.player.stop()
-            self.player.state.mark_manual_operation()
-            
-            # 播放目標歌曲
-            await self._play_song(song)
-            
-            embed = self.embed_builder.info_embed(f"已跳轉到: {song.title}")
-            await interaction.followup.send(embed=embed)
+            # 使用鎖保護整個跳轉操作
+            async with self._play_lock:
+                # 轉換為 0-based index
+                target_index = index - 1
+                
+                # 嘗試跳轉
+                song = self.player.queue.jump_to(target_index)
+                
+                if song is None:
+                    await interaction.followup.send(
+                        f"找不到編號為 {index} 的歌曲（範圍：1-{len(self.player.queue)}）",
+                        ephemeral=True
+                    )
+                    return
+                
+                # 停止當前播放
+                await self.player.stop()
+                self.player.state.mark_manual_operation()
+                
+                # 播放目標歌曲（使用內部方法避免重複取鎖）
+                success = await self._play_song_internal(song)
+                
+                if success:
+                    embed = self.embed_builder.info_embed(f"已跳轉到: {song.title}")
+                    await interaction.followup.send(embed=embed)
+                else:
+                    await interaction.followup.send(
+                        f"歌曲 {song.title} 無法播放",
+                        ephemeral=True
+                    )
             
         except QueueError as e:
             await interaction.followup.send(e.user_message, ephemeral=True)
@@ -996,20 +1109,67 @@ class MusicPlayerCog(commands.Cog):
     
     # ==================== 工具方法 ====================
     
-    async def _cleanup_resources(self):
-        """清理所有資源"""
-        try:
-            # 停止播放
-            if self.player:
-                await self.player.stop()
-                if self.player.voice_client:
-                    await self.player.voice_client.disconnect()
-                await self.player.queue.clear()
-                self.player.cache.clear()
+    async def _connect_voice_with_retry(
+        self, 
+        channel: discord.VoiceChannel
+    ) -> discord.VoiceClient | None:
+        """
+        帶重試的語音頻道連線
+        
+        Args:
+            channel: 目標語音頻道
             
-            # 停止背景任務
+        Returns:
+            VoiceClient 如果成功，None 如果失敗
+        """
+        last_error = None
+        
+        for attempt in range(1, VOICE_CONNECT_MAX_RETRIES + 1):
+            try:
+                logger.debug(f"嘗試連接語音頻道 (第 {attempt}/{VOICE_CONNECT_MAX_RETRIES} 次)")
+                voice_client = await channel.connect()
+                logger.info(f"成功連接語音頻道: {channel.name}")
+                return voice_client
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"連接語音頻道失敗 (第 {attempt}/{VOICE_CONNECT_MAX_RETRIES} 次): "
+                    f"{type(e).__name__}: {e}"
+                )
+                
+                if attempt < VOICE_CONNECT_MAX_RETRIES:
+                    await asyncio.sleep(VOICE_CONNECT_RETRY_DELAY)
+        
+        logger.error(f"連接語音頻道失敗，已達最大重試次數: {last_error}")
+        return None
+    
+    async def _cleanup_resources(self):
+        """ 清理所有資源"""
+        try:
+            # 停止背景任務（優先停止，避免繼續更新 UI）
             if self.update_embed_task.is_running():
                 self.update_embed_task.stop()
+            
+            # 停止播放並斷開連線
+            if self.player:
+                # 先停止播放
+                await self.player.stop()
+                
+                # 斷開語音連線
+                if self.player.voice_client:
+                    await self.player.voice_client.disconnect()
+                
+                # 等待一下讓 FFmpeg 完全釋放檔案
+                await asyncio.sleep(0.5)
+                
+                # 清空佇列
+                await self.player.queue.clear()
+                
+                # 清理快取（先取消預載，再刪除檔案）
+                self.player.cache.cancel_all_preloads()
+                await asyncio.sleep(0.2)  # 等待預載任務取消
+                self.player.cache.clear()
             
             # 重置狀態
             self.player_message = None
@@ -1030,18 +1190,29 @@ class MusicPlayerCog(commands.Cog):
         try:
             yt_dlp_path = shutil.which("yt-dlp")
             if yt_dlp_path:
-                logger.debug("[YT-DLP] 檢查 yt-dlp 更新...")
+                logger.debug(f"[YT-DLP] 檢查更新，路徑: {yt_dlp_path}")
                 process = await asyncio.create_subprocess_exec(
                     "yt-dlp", "-U",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await process.communicate()
-                logger.debug(f"[YT-DLP] 更新輸出: {stdout.decode().strip()}")
+                stdout_str = stdout.decode().strip()
+                stderr_str = stderr.decode().strip()
+                
+                logger.debug(f"[YT-DLP] 更新檢查 returncode={process.returncode}")
+                if stdout_str:
+                    logger.debug(f"[YT-DLP] stdout: {stdout_str}")
+                if stderr_str:
+                    logger.debug(f"[YT-DLP] stderr: {stderr_str}")
+                if not stdout_str and not stderr_str:
+                    logger.debug("[YT-DLP] 更新檢查完成（無輸出）")
+            else:
+                logger.warning("[YT-DLP] 找不到 yt-dlp，請確認已安裝")
         except Exception as e:
-            logger.error(f"[YT-DLP] 檢查更新時發生錯誤: {e}")
+            logger.error(f"[YT-DLP] 檢查更新時發生錯誤: {type(e).__name__}: {e}")
     
-    # ==================== 事件監聽 ====================
+    # ==================== 事件監聯 ====================
     
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -1056,11 +1227,22 @@ class MusicPlayerCog(commands.Cog):
         
         # Bot 被動斷線
         if before.channel is not None and after.channel is None:
-            if not self.manual_disconnect:
+            # 只有在播放器活躍時才需要重連
+            # 條件：非手動斷線 且 有播放器訊息 且 佇列有內容
+            should_reconnect = (
+                not self.manual_disconnect
+                and self.player_message is not None
+                and self.player is not None
+                and len(self.player.queue) > 0
+            )
+            
+            if should_reconnect:
                 logger.warning("Bot 被動斷線，啟動自動重連")
                 self.reconnect_attempts = 0
                 if not self.voice_reconnect_loop.is_running():
                     self.voice_reconnect_loop.start()
+            else:
+                logger.debug("Bot 離開語音頻道（無需重連）")
     
     @tasks.loop(seconds=15)
     async def voice_reconnect_loop(self):
@@ -1098,19 +1280,21 @@ class MusicPlayerCog(commands.Cog):
         if not self.last_voice_channel or not self.player:
             return
         
-        try:
-            voice_client = await self.last_voice_channel.connect()
-            await self.player.set_voice_client(voice_client)
-            
-            # 嘗試恢復播放
-            current_song = self.player.queue.current
-            if current_song:
-                await self._play_song(current_song)
-            
-            logger.info("成功重連並恢復播放")
-            
-        except Exception as e:
-            logger.error(f"重連失敗: {e}")
+        # 使用帶重試的連線方法
+        voice_client = await self._connect_voice_with_retry(self.last_voice_channel)
+        
+        if voice_client is None:
+            logger.error("重連失敗：無法連接語音頻道")
+            return
+        
+        await self.player.set_voice_client(voice_client)
+        
+        # 嘗試恢復播放
+        current_song = self.player.queue.current
+        if current_song:
+            await self._play_song(current_song)
+        
+        logger.info("成功重連並恢復播放")
 
 
 async def setup(bot: commands.Bot):

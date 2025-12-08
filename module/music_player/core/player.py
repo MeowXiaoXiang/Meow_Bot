@@ -225,8 +225,8 @@ class MusicPlayer:
                 info, path = await self.downloader.download(song.url, song.id)
                 if not path:
                     logger.error(f"下載失敗: {song.title}")
-                    # 嘗試播放下一首
-                    return await self.next()
+                    # 不自動跳歌，讓呼叫者處理
+                    return None
                 song.cached_path = str(path)
             else:
                 logger.error("無法下載：downloader 未設定")

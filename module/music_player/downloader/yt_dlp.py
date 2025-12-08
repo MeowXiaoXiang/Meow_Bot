@@ -19,8 +19,6 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Callable
 from loguru import logger
 
-from ..utils.errors import DownloadError, SongUnavailableError
-
 
 class YTDLPDownloader:
     """
@@ -122,6 +120,8 @@ class YTDLPDownloader:
             url
         ]
         
+        logger.debug(f"[yt-dlp] extract_info 執行指令: {' '.join(args)}")
+        
         try:
             proc = await asyncio.wait_for(
                 asyncio.create_subprocess_exec(
@@ -137,22 +137,29 @@ class YTDLPDownloader:
                 timeout=timeout
             )
             
+            stdout_str = stdout.decode().strip()
+            stderr_str = stderr.decode().strip()
+            
+            logger.debug(f"[yt-dlp] extract_info returncode={proc.returncode}")
+            if stderr_str:
+                logger.debug(f"[yt-dlp] extract_info stderr: {stderr_str[:500]}")
+            
             if proc.returncode != 0:
-                error_msg = stderr.decode().strip()
+                error_msg = stderr_str or stdout_str or f"未知錯誤 (returncode={proc.returncode})"
                 logger.error(f"yt-dlp extract_info 失敗: {error_msg}")
                 return self._create_error_response(error_msg, url)
             
-            data = json.loads(stdout.decode())
+            data = json.loads(stdout_str)
             return self._parse_video_data(data)
             
         except asyncio.TimeoutError:
-            logger.error(f"extract_info 超時: {url}")
+            logger.error(f"extract_info 超時 ({timeout}s): {url}")
             return None
         except json.JSONDecodeError as e:
             logger.error(f"JSON 解析失敗: {e}")
             return None
         except Exception as e:
-            logger.error(f"extract_info 錯誤: {e}")
+            logger.error(f"extract_info 錯誤: {type(e).__name__}: {e}")
             return None
     
     async def extract_playlist(self, url: str, timeout: int = 120) -> Optional[List[dict]]:
@@ -175,6 +182,8 @@ class YTDLPDownloader:
             url
         ]
         
+        logger.debug(f"[yt-dlp] extract_playlist 執行指令: {' '.join(args)}")
+        
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -187,13 +196,20 @@ class YTDLPDownloader:
                 timeout=timeout
             )
             
+            stdout_str = stdout.decode().strip()
+            stderr_str = stderr.decode().strip()
+            
+            logger.debug(f"[yt-dlp] extract_playlist returncode={proc.returncode}, stdout_len={len(stdout_str)}, stderr_len={len(stderr_str)}")
+            if stderr_str:
+                logger.debug(f"[yt-dlp] extract_playlist stderr: {stderr_str[:500]}")
+            
             if proc.returncode != 0:
-                error_msg = stderr.decode().strip()
-                logger.error(f"yt-dlp extract_playlist 失敗: {error_msg}")
+                error_msg = stderr_str or stdout_str or f"未知錯誤 (returncode={proc.returncode})"
+                logger.error(f"yt-dlp extract_playlist 失敗 (returncode={proc.returncode}): {error_msg}")
                 return None
             
             entries = []
-            for line in stdout.decode().strip().split('\n'):
+            for line in stdout_str.split('\n'):
                 if not line:
                     continue
                 try:
@@ -208,10 +224,10 @@ class YTDLPDownloader:
             return entries if entries else None
             
         except asyncio.TimeoutError:
-            logger.error(f"extract_playlist 超時: {url}")
+            logger.error(f"extract_playlist 超時 ({timeout}s): {url}")
             return None
         except Exception as e:
-            logger.error(f"extract_playlist 錯誤: {e}")
+            logger.error(f"extract_playlist 錯誤: {type(e).__name__}: {e}")
             return None
     
     async def download(
@@ -271,6 +287,8 @@ class YTDLPDownloader:
             "--newline",            # 進度每行輸出（方便解析）
             url
         ]
+        
+        logger.debug(f"[yt-dlp] download 執行指令: {' '.join(args)}")
         
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -368,20 +386,31 @@ class YTDLPDownloader:
             
             if proc.returncode != 0:
                 logger.error(f"FFmpeg 轉換失敗: {stderr.decode()}")
+                # 轉換失敗也要刪除原始檔
+                self._safe_delete(input_file)
                 return None
             
             # 刪除原始檔
-            try:
-                input_file.unlink()
-            except Exception as e:
-                logger.warning(f"刪除原始檔失敗: {e}")
+            self._safe_delete(input_file)
             
             logger.debug(f"轉換完成: {output_file}")
             return output_file
             
         except Exception as e:
             logger.error(f"轉換錯誤: {e}")
+            # 異常時也要清理原始檔
+            self._safe_delete(input_file)
             return None
+    
+    def _safe_delete(self, file: Path) -> bool:
+        """安全刪除檔案，失敗時僅記錄警告"""
+        try:
+            if file.exists():
+                file.unlink()
+                return True
+        except Exception as e:
+            logger.warning(f"刪除檔案失敗: {file} - {e}")
+        return False
     
     def _find_downloaded_file(self, song_id: str) -> Optional[Path]:
         """

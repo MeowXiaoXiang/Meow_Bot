@@ -351,9 +351,12 @@ class CacheManager:
     
     # === 清理 ===
     
+    # 需要清理的媒體檔案副檔名
+    MEDIA_EXTENSIONS = {".opus", ".webm", ".m4a", ".mp3", ".mp4", ".wav", ".ogg", ".flac"}
+    
     def clear_all(self) -> int:
         """
-        清空所有快取
+        清空所有快取（包括未完成轉換的原始檔）
         
         Returns:
             被刪除的檔案數量
@@ -362,12 +365,14 @@ class CacheManager:
         self.cancel_all_preloads()
         
         deleted = 0
-        for file in self.cache_dir.glob("*.opus"):
-            try:
-                file.unlink()
-                deleted += 1
-            except Exception as e:
-                logger.warning(f"刪除快取失敗: {file} - {e}")
+        # 清理所有媒體檔案，不只是 .opus
+        for file in self.cache_dir.iterdir():
+            if file.is_file() and file.suffix.lower() in self.MEDIA_EXTENSIONS:
+                try:
+                    file.unlink()
+                    deleted += 1
+                except Exception as e:
+                    logger.warning(f"刪除快取失敗: {file} - {e}")
         
         self._keep_ids.clear()
         

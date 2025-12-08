@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Awaitable, Any
-import discord
 from discord.ui import View, Button
 from discord import ButtonStyle, Interaction
 from loguru import logger
