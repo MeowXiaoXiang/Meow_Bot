@@ -214,12 +214,11 @@ class MusicPlayer:
             logger.warning("佇列為空，無法播放")
             return None
         
-        # 確保有快取
+        # 嘗試從快取取得（使用區域變數，不寫回 Song）
         cache_path = self.cache.get(song.id)
-        if cache_path:
-            song.cached_path = cache_path
         
-        if not song.cached_path or not Path(song.cached_path).exists():
+        # 如果沒有快取或檔案不存在，需要下載
+        if not cache_path or not Path(cache_path).exists():
             logger.debug(f"下載中: {song.title}")
             if self.downloader:
                 info, path = await self.downloader.download(song.url, song.id)
@@ -227,26 +226,32 @@ class MusicPlayer:
                     logger.error(f"下載失敗: {song.title}")
                     # 不自動跳歌，讓呼叫者處理
                     return None
+                # 下載完成：更新區域變數和 Song（只在主動下載時更新）
+                cache_path = str(path)
                 song.cached_path = str(path)
             else:
                 logger.error("無法下載：downloader 未設定")
                 return None
         
-        # 停止當前播放
-        if self._voice_client.is_playing():
+        # 停止當前播放（邊界檢查：確保 voice_client 存在）
+        if self._voice_client and self._voice_client.is_playing():
             self._voice_client.stop()
         
-        # 建立音訊源
+        # 建立音訊源（使用區域變數 cache_path）
         try:
             audio_source = discord.FFmpegOpusAudio(
-                source=song.cached_path,
+                source=cache_path,
                 executable=self.ffmpeg_path
             )
         except Exception as e:
             logger.error(f"建立音訊源失敗: {e}")
             raise PlaybackError(str(e))
         
-        # 開始播放
+        # 開始播放（邊界檢查：確保 voice_client 仍然存在）
+        if not self._voice_client:
+            logger.error("語音客戶端已失效")
+            return None
+        
         self._voice_client.play(
             audio_source,
             after=self._on_playback_finished
@@ -279,7 +284,7 @@ class MusicPlayer:
         Returns:
             是否成功暫停
         """
-        if not self.is_connected:
+        if not self.is_connected or not self._voice_client:
             return False
         
         if self._voice_client.is_playing():
@@ -297,7 +302,7 @@ class MusicPlayer:
         Returns:
             是否成功恢復
         """
-        if not self.is_connected:
+        if not self.is_connected or not self._voice_client:
             return False
         
         if self._voice_client.is_paused():

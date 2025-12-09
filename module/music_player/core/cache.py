@@ -50,9 +50,18 @@ class CacheManager:
         
         Args:
             cache_dir: 快取目錄路徑
-            window_behind: 當前歌曲之前保留幾首快取
-            window_ahead: 當前歌曲之後保留幾首快取（同時也是預載數量）
+            window_behind: 當前歌曲之前保留幾首快取（>= 0）
+            window_ahead: 當前歌曲之後保留幾首快取（>= 0）
+                         設為 0 表示永久保存所有快取
         """
+        # 驗證參數
+        if window_behind < 0:
+            logger.warning(f"window_behind 不能為負數，已設為 0")
+            window_behind = 0
+        if window_ahead < 0:
+            logger.warning(f"window_ahead 不能為負數，已設為 0")
+            window_ahead = 0
+        
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -65,9 +74,11 @@ class CacheManager:
         # 當前保留的 song_id 集合（用於判斷是否應該刪除）
         self._keep_ids: Set[str] = set()
         
+        # 記錄初始化訊息
+        preserve_mode = "永久保存模式" if window_ahead == 0 else "滑動視窗模式"
         logger.debug(
             f"CacheManager 初始化: cache_dir={cache_dir}, "
-            f"window=[{window_behind}, {window_ahead}]"
+            f"window=[{window_behind}, {window_ahead}], {preserve_mode}"
         )
     
     # === 路徑與檢查 ===
@@ -176,7 +187,7 @@ class CacheManager:
         歌曲切換時呼叫此方法
         
         會自動：
-        1. 清理滑動窗口外的舊快取
+        1. 清理滑動窗口外的舊快取（除非 window_ahead=0，表示永久保存）
         2. 背景預載接下來的歌曲
         
         Args:
@@ -187,28 +198,45 @@ class CacheManager:
         if not queue or current_index < 0:
             return
         
-        # 更新保留的 song_id 集合
+        # 更新保留的 song_id 集合（用於預載和選擇性清理）
         self._update_keep_ids(queue, current_index)
         
-        # 清理舊快取
-        await self._cleanup_old()
+        # 只在非永久保存模式（window_ahead > 0）時清理舊快取
+        if self.window_ahead > 0:
+            await self._cleanup_old()
+        else:
+            logger.debug("快取管理：永久保存模式已啟用，跳過自動清理")
         
-        # 預載新歌
-        await self._preload_ahead(queue, current_index, downloader)
+        # 預載新歌（當 window_ahead > 0 時進行）
+        if self.window_ahead > 0:
+            await self._preload_ahead(queue, current_index, downloader)
+        else:
+            logger.debug("快取管理：永久保存模式已啟用，跳過預載")
     
     def _update_keep_ids(self, queue: List["Song"], current_index: int) -> None:
         """
         更新應保留的 song_id 集合
+        
+        永久保存模式（window_ahead=0）：保留所有歌曲 ID（由清理邏輯處理是否實際刪除）
+        滑動窗口模式（window_ahead>0）：只保留窗口內的歌曲 ID
         """
-        keep_start = max(0, current_index - self.window_behind)
-        keep_end = min(len(queue), current_index + self.window_ahead + 1)
-        
-        self._keep_ids = {queue[i].id for i in range(keep_start, keep_end)}
-        
-        logger.debug(
-            f"快取窗口更新: 保留索引 [{keep_start}, {keep_end}), "
-            f"共 {len(self._keep_ids)} 首"
-        )
+        if self.window_ahead == 0:
+            # 永久保存模式：保留所有下載的歌曲
+            self._keep_ids = {song.id for song in queue}
+            logger.debug(
+                f"快取窗口更新（永久保存模式）: 保留全部 {len(self._keep_ids)} 首歌曲"
+            )
+        else:
+            # 滑動窗口模式：只保留窗口內的歌曲
+            keep_start = max(0, current_index - self.window_behind)
+            keep_end = min(len(queue), current_index + self.window_ahead + 1)
+            
+            self._keep_ids = {queue[i].id for i in range(keep_start, keep_end)}
+            
+            logger.debug(
+                f"快取窗口更新: 保留索引 [{keep_start}, {keep_end}), "
+                f"共 {len(self._keep_ids)} 首"
+            )
     
     async def _cleanup_old(self) -> None:
         """
@@ -269,14 +297,17 @@ class CacheManager:
     async def _preload_one(self, song: "Song", downloader) -> None:
         """
         預載單首歌
+        
+        注意：此方法只負責下載，不修改 Song 物件。
+        Cache 是「通知制」，不應該改變資料模型的狀態。
         """
         try:
             logger.debug(f"背景預載開始: {song.title}")
             info, path = await downloader.download(song.url)
             
             if path:
-                # 更新歌曲的快取路徑
-                song.cached_path = str(path)
+                # 只記錄快取（不修改 Song 物件）
+                self.put(song.id, path)
                 logger.debug(f"背景預載完成: {song.title}")
             else:
                 logger.warning(f"背景預載失敗（無檔案）: {song.title}")
