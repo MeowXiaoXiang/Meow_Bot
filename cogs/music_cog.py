@@ -167,6 +167,15 @@ class MusicPlayerCog(commands.Cog):
         queue = self.player.queue
         max_retries = 5  # 最多嘗試 5 首，避免無限迴圈
         
+        # 單首歌曲循環模式：直接重播當前歌曲
+        if queue.loop and len(queue) == 1:
+            current_song = queue.current
+            if current_song:
+                success = await self._play_song(current_song)
+                if not success:
+                    await self._show_error("無法播放此歌曲")
+            return
+        
         for _ in range(max_retries):
             # 檢查佇列是否為空
             if len(queue) == 0:
@@ -392,10 +401,23 @@ class MusicPlayerCog(commands.Cog):
             return
         
         async with self._play_lock:
-            await self.player.stop()
+            # 先標記手動操作，避免 stop() 觸發的回調被處理
             self.player.state.mark_manual_operation()
             
-            next_song = self.player.queue.next()
+            # 單首歌曲循環模式：重新開始播放（而非無限跳歌）
+            queue = self.player.queue
+            if queue.loop and len(queue) == 1:
+                current_song = queue.current
+                if current_song:
+                    await self.player.stop()
+                    success = await self._play_song_internal(current_song)
+                    if not success:
+                        await self._show_error("無法重新播放此歌曲")
+                return
+            
+            await self.player.stop()
+            
+            next_song = queue.next()
             if next_song:
                 success = await self._play_song_internal(next_song)
                 if not success:
@@ -411,10 +433,23 @@ class MusicPlayerCog(commands.Cog):
             return
         
         async with self._play_lock:
-            await self.player.stop()
+            # 先標記手動操作，避免 stop() 觸發的回調被處理
             self.player.state.mark_manual_operation()
             
-            prev_song = self.player.queue.previous()
+            # 單首歌曲循環模式：重新開始播放（而非無限跳歌）
+            queue = self.player.queue
+            if queue.loop and len(queue) == 1:
+                current_song = queue.current
+                if current_song:
+                    await self.player.stop()
+                    success = await self._play_song_internal(current_song)
+                    if not success:
+                        await self._show_error("無法重新播放此歌曲")
+                return
+            
+            await self.player.stop()
+            
+            prev_song = queue.previous()
             if prev_song:
                 success = await self._play_song_internal(prev_song)
                 if not success:
@@ -426,13 +461,20 @@ class MusicPlayerCog(commands.Cog):
     
     async def _try_next_available_song(self):
         """在鎖內嘗試找到下一首可播放的歌曲"""
+        queue = self.player.queue
+        
+        # 單首歌曲循環模式：不嘗試下一首（因為只有一首）
+        if queue.loop and len(queue) == 1:
+            await self._show_error("唯一的歌曲無法播放")
+            return
+        
         max_retries = 5
         for _ in range(max_retries):
-            if len(self.player.queue) == 0:
+            if len(queue) == 0:
                 await self._show_empty_queue()
                 return
             
-            next_song = self.player.queue.next()
+            next_song = queue.next()
             if next_song is None:
                 await self._refresh_player_ui()
                 return
@@ -445,13 +487,20 @@ class MusicPlayerCog(commands.Cog):
     
     async def _try_previous_available_song(self):
         """在鎖內嘗試找到上一首可播放的歌曲"""
+        queue = self.player.queue
+        
+        # 單首歌曲循環模式：不嘗試上一首（因為只有一首）
+        if queue.loop and len(queue) == 1:
+            await self._show_error("唯一的歌曲無法播放")
+            return
+        
         max_retries = 5
         for _ in range(max_retries):
-            if len(self.player.queue) == 0:
+            if len(queue) == 0:
                 await self._show_empty_queue()
                 return
             
-            prev_song = self.player.queue.previous()
+            prev_song = queue.previous()
             if prev_song is None:
                 await self._refresh_player_ui()
                 return
@@ -909,7 +958,8 @@ class MusicPlayerCog(commands.Cog):
             return
         
         try:
-            # 停止播放
+            # 標記手動操作並停止播放
+            self.player.state.mark_manual_operation()
             await self.player.stop()
             
             # 清空佇列
@@ -1011,9 +1061,9 @@ class MusicPlayerCog(commands.Cog):
                     )
                     return
                 
-                # 停止當前播放
-                await self.player.stop()
+                # 先標記手動操作，再停止當前播放
                 self.player.state.mark_manual_operation()
+                await self.player.stop()
                 
                 # 播放目標歌曲（使用內部方法避免重複取鎖）
                 success = await self._play_song_internal(song)
@@ -1153,7 +1203,8 @@ class MusicPlayerCog(commands.Cog):
             
             # 停止播放並斷開連線
             if self.player:
-                # 先停止播放
+                # 標記手動操作並停止播放
+                self.player.state.mark_manual_operation()
                 await self.player.stop()
                 
                 # 斷開語音連線

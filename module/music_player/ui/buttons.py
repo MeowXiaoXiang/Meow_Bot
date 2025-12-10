@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 # 按鈕動作類型
 type ButtonAction = str
 type ButtonCallback = Callable[[Interaction, ButtonAction], Awaitable[Any]]
+type TimeoutCallback = Callable[[], Awaitable[Any]]
 
 
 class MusicPlayerView(View):
@@ -98,10 +99,10 @@ class MusicPlayerView(View):
         self.next_button.callback = self._handle_button
         self.add_item(self.next_button)
         
-        # 循環按鈕
+        # 循環按鈕（不更換 emoji，只改變按鈕顏色以表示狀態）
         self.loop_button = Button(
-            emoji="🔂" if self._is_looping else "🔁",
-            style=ButtonStyle.success if self._is_looping else ButtonStyle.secondary,
+            emoji="🔁",
+            style=ButtonStyle.primary if self._is_looping else ButtonStyle.secondary,
             custom_id=self.ACTION_LOOP,
             row=0
         )
@@ -111,6 +112,7 @@ class MusicPlayerView(View):
         # 離開按鈕
         self.leave_button = Button(
             emoji="🚪",
+            label="離開頻道",
             style=ButtonStyle.danger,
             custom_id=self.ACTION_LEAVE,
             row=0
@@ -161,8 +163,7 @@ class MusicPlayerView(View):
             is_looping: 是否循環
         """
         self._is_looping = is_looping
-        self.loop_button.emoji = "🔂" if is_looping else "🔁"
-        self.loop_button.style = ButtonStyle.success if is_looping else ButtonStyle.secondary
+        self.loop_button.style = ButtonStyle.primary if is_looping else ButtonStyle.secondary
         logger.debug(f"[MusicPlayerView] 更新循環狀態: {'循環開啟' if is_looping else '循環關閉'}")
     
     def update_navigation(self, has_previous: bool, has_next: bool) -> None:
