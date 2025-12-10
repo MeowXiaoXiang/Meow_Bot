@@ -305,10 +305,19 @@ class EmbedBuilder:
     # === 內部方法 ===
     
     @staticmethod
-    def _create_progress_bar(current: int, total: int, length: int = PROGRESS_BAR_LENGTH) -> str:
+    def _create_progress_bar(current: int | float, total: int | float, length: int = PROGRESS_BAR_LENGTH) -> str:
         """
-        建立進度條（使用方塊風格）
+        建立進度條（使用方塊風格，支援 int 和 float）
+        
+        Args:
+            current: 當前位置（秒）
+            total: 總長度（秒）
+            length: 進度條長度
         """
+        # 轉換為數值型別並處理邊界
+        current = float(current) if current is not None else 0
+        total = float(total) if total is not None else 0
+        
         if total <= 0:
             return PROGRESS_BAR_EMPTY * length
         
@@ -317,10 +326,16 @@ class EmbedBuilder:
         return bar
     
     @staticmethod
-    def _format_time(seconds: int) -> str:
+    def _format_time(seconds: int | float) -> str:
         """
-        格式化時間
+        格式化時間（支援 int 和 float，適配各平台 yt-dlp 回傳格式）
+        
+        Args:
+            seconds: 秒數（int 或 float）
         """
+        # 轉換為整數，處理 float 類型（某些平台如 Dailymotion 會回傳 float）
+        seconds = int(seconds) if seconds is not None else 0
+        
         if seconds >= 3600:
             hours = seconds // 3600
             minutes = (seconds % 3600) // 60

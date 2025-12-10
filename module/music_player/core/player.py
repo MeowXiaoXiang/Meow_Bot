@@ -408,12 +408,18 @@ class MusicPlayer:
             logger.warning(f"無法取得資訊: {info.get('display_message')}")
             return None
         
-        # 建立 Song 物件
+        # 建立 Song 物件（確保 duration 為 int）
+        duration = info.get("duration", 0)
+        try:
+            duration = int(float(duration)) if duration else 0
+        except (ValueError, TypeError, OverflowError):
+            duration = 0
+        
         song = Song(
             id=info["id"],
             title=info["title"],
             url=info["url"],
-            duration=info["duration"],
+            duration=duration,
             uploader=info["uploader"],
             uploader_url=info.get("uploader_url", ""),
             thumbnail=info.get("thumbnail", ""),
@@ -443,11 +449,18 @@ class MusicPlayer:
         
         songs = []
         for info in entries:
+            # 確保 duration 為 int
+            duration = info.get("duration", 0)
+            try:
+                duration = int(float(duration)) if duration else 0
+            except (ValueError, TypeError, OverflowError):
+                duration = 0
+            
             song = Song(
                 id=info["id"],
                 title=info["title"],
                 url=info["url"],
-                duration=info.get("duration", 0),
+                duration=duration,
                 uploader=info.get("uploader", "未知"),
                 uploader_url=info.get("uploader_url", ""),
                 thumbnail=info.get("thumbnail", ""),

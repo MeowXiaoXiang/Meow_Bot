@@ -451,12 +451,20 @@ class YTDLPDownloader:
             if "youtube" in extractor or not extractor:
                 page_url = f"https://www.youtube.com/watch?v={data.get('id')}"
         
+        # 處理 duration（確保轉為 int，某些平台如 Dailymotion 會回傳 float）
+        duration = data.get("duration") or 0
+        try:
+            duration = int(float(duration)) if duration else 0
+        except (ValueError, TypeError, OverflowError):
+            # ValueError: 無效字串, TypeError: 無法轉換, OverflowError: inf/nan
+            duration = 0
+        
         return {
             "id": data.get("id"),
             "title": data.get("title") or "未知標題",
             "uploader": data.get("uploader") or data.get("artist") or "未知上傳者",
             "uploader_url": uploader_url,
-            "duration": data.get("duration") or 0,
+            "duration": duration,
             "url": page_url,
             "thumbnail": thumb,
         }
@@ -477,10 +485,16 @@ class YTDLPDownloader:
         if not title or title in ["unknown title", "未知標題", "untitled"]:
             return False
         
-        # 檢查時長
+        # 檢查時長（轉換為整數處理）
         duration = data.get("duration")
-        if duration is not None and duration <= 0:
-            return False
+        if duration is not None:
+            try:
+                duration = int(float(duration))  # 處理 float 類型
+                if duration <= 0:
+                    return False
+            except (ValueError, TypeError, OverflowError):
+                # ValueError: 無效字串, TypeError: 無法轉換, OverflowError: inf/nan
+                return False
         
         return True
     

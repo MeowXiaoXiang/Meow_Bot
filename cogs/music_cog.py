@@ -621,12 +621,18 @@ class MusicPlayerCog(commands.Cog):
                 await self.player_message.edit(content=None, embed=embed, view=None)
                 return
             
-            # 建立 Song 物件
+            # 建立 Song 物件（確保 duration 為 int）
+            duration = info.get("duration") or 0
+            try:
+                duration = int(float(duration)) if duration else 0
+            except (ValueError, TypeError, OverflowError):
+                duration = 0
+            
             song = Song(
                 id=info.get("id") or "",
                 title=info.get("title") or "未知標題",
                 url=url,
-                duration=info.get("duration") or 0,
+                duration=duration,
                 thumbnail=info.get("thumbnail") or "",
                 uploader=info.get("uploader") or "未知上傳者",
                 uploader_url=info.get("uploader_url") or "",
@@ -682,11 +688,18 @@ class MusicPlayerCog(commands.Cog):
             # 建立 Song 物件並加入佇列
             songs = []
             for entry in entries:
+                # 確保 duration 為 int
+                duration = entry.get("duration") or 0
+                try:
+                    duration = int(float(duration)) if duration else 0
+                except (ValueError, TypeError, OverflowError):
+                    duration = 0
+                
                 song = Song(
                     id=entry.get("id") or "",
                     title=entry.get("title") or "未知標題",
                     url=entry.get("url") or "",
-                    duration=entry.get("duration") or 0,
+                    duration=duration,
                     thumbnail=entry.get("thumbnail") or "",
                     uploader=entry.get("uploader") or "未知上傳者",
                     uploader_url=entry.get("uploader_url") or "",

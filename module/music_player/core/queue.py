@@ -39,15 +39,18 @@ class Song:
         return self.cached_path is not None
     
     def format_duration(self) -> str:
-        """格式化時長"""
-        if self.duration >= 3600:
-            hours = self.duration // 3600
-            minutes = (self.duration % 3600) // 60
-            seconds = self.duration % 60
+        """格式化時長（處理 int 和 float 類型）"""
+        # 確保是整數（某些平台會回傳 float）
+        duration = int(self.duration) if self.duration is not None else 0
+        
+        if duration >= 3600:
+            hours = duration // 3600
+            minutes = (duration % 3600) // 60
+            seconds = duration % 60
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         else:
-            minutes = self.duration // 60
-            seconds = self.duration % 60
+            minutes = duration // 60
+            seconds = duration % 60
             return f"{minutes}:{seconds:02d}"
 
 
