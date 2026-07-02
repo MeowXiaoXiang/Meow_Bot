@@ -3,7 +3,7 @@
 ![Python 3.13](https://img.shields.io/badge/Python-3.13-blue?logo=python)
 ![discord.py 2.7](https://img.shields.io/badge/discord.py-2.7-5865F2?logo=discord&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Version v1.1](https://img.shields.io/badge/Version-v1.1-orange)
+![Version v1.2](https://img.shields.io/badge/Version-v1.2-orange)
 
 ## 介紹
 
