@@ -1,9 +1,11 @@
+import asyncio
+from io import BytesIO
+from typing import Optional, Union
+
+import aiohttp
 import discord
 from discord.ext import commands
-from typing import Optional, Union
-import aiohttp
-from PIL import Image
-from io import BytesIO
+from PIL import Image, ImageStat, UnidentifiedImageError
 
 
 class Avatar(commands.Cog):
@@ -12,19 +14,20 @@ class Avatar(commands.Cog):
 
     async def _get_average_color(self, avatar_url: str) -> tuple[int, int, int]:
         """非同步獲取圖片並計算平均顏色"""
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(avatar_url) as response:
+                response.raise_for_status()
                 image_data = await response.read()
-        
-        image = Image.open(BytesIO(image_data)).convert("RGB")
-        pixels = list(image.getdata())
-        num_pixels = len(pixels)
-        
-        r_total = sum(p[0] for p in pixels)
-        g_total = sum(p[1] for p in pixels)
-        b_total = sum(p[2] for p in pixels)
-        
-        return (r_total // num_pixels, g_total // num_pixels, b_total // num_pixels)
+
+        return await asyncio.to_thread(self._calculate_average_color, image_data)
+
+    @staticmethod
+    def _calculate_average_color(image_data: bytes) -> tuple[int, int, int]:
+        with Image.open(BytesIO(image_data)) as source:
+            image = source.convert("RGB")
+            mean = ImageStat.Stat(image).mean
+        return tuple(round(channel) for channel in mean)
 
     @discord.app_commands.command(name="查看成員頭貼", description="顯示目標成員的頭貼，可擇一使用選擇用戶或輸入用戶id")
     @discord.app_commands.describe(
@@ -53,13 +56,10 @@ class Avatar(commands.Cog):
         # 透過 ID 查找用戶
         if user_id:
             try:
-                user = self.bot.get_user(int(user_id))
+                parsed_user_id = int(user_id)
+                user = self.bot.get_user(parsed_user_id)
                 if user is None:
-                    await interaction.response.send_message(
-                        embed=discord.Embed(title="錯誤", description="無法找到指定的用戶", color=0xff0000), 
-                        ephemeral=True
-                    )
-                    return
+                    user = await self.bot.fetch_user(parsed_user_id)
                 member = user
             except ValueError:
                 await interaction.response.send_message(
@@ -71,12 +71,41 @@ class Avatar(commands.Cog):
                     ephemeral=True
                 )
                 return
+            except discord.NotFound:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="錯誤",
+                        description="無法找到指定的用戶",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="錯誤",
+                        description="Discord 暫時無法查詢該用戶，請稍後再試。",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
 
         # 延遲回應（圖片處理需要時間）
         await interaction.response.defer()
 
-        avatar_url = member.avatar.url
-        avg_color = await self._get_average_color(avatar_url)
+        avatar = member.display_avatar
+        avatar_url = avatar.url
+        color_source_url = avatar.replace(size=128, static_format="png").url
+        try:
+            avg_color = await self._get_average_color(color_source_url)
+        except (aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, OSError):
+            await interaction.followup.send(
+                "無法讀取頭貼圖片，請稍後再試。",
+                ephemeral=True,
+            )
+            return
         
         embed = discord.Embed(
             title=f"{member.name} 的頭貼", 
