@@ -483,7 +483,7 @@ class MusicPlayer:
         Returns:
             被移除的歌曲
         """
-        return await self.queue.remove(index)
+        return await self.queue.remove_by_index(index)
     
     async def clear_queue(self) -> int:
         """

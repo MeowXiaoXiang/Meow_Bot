@@ -338,10 +338,29 @@ class CacheManager:
                 logger.debug(f"取消預載: {song_id}")
         
         self._preload_tasks.clear()
-        
+
         if cancelled > 0:
             logger.debug(f"取消了 {cancelled} 個預載任務")
         
+        return cancelled
+
+    async def cancel_all_preloads_and_wait(self) -> int:
+        """
+        取消所有預載任務並等待它們結束
+
+        Returns:
+            被取消的任務數量
+        """
+        tasks = [
+            task
+            for task in self._preload_tasks.values()
+            if not task.done()
+        ]
+
+        cancelled = self.cancel_all_preloads()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
         return cancelled
     
     def is_preloading(self, song_id: str) -> bool:

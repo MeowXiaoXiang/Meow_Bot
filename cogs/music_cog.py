@@ -48,8 +48,9 @@ from module.music_player import (
 
 # -------------------- Other --------------------
 import asyncio
+import json
 import os
-import shutil
+import sys
 import time
 from loguru import logger
 
@@ -79,13 +80,15 @@ class MusicPlayerCog(commands.Cog):
         self.manual_disconnect = False
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = RECONNECT_MAX_ATTEMPTS
-        
-        # yt-dlp 更新檢查
         self.last_yt_dlp_check: float | None = None
-        
+
         # 播放鎖（防止競爭條件）
         self._play_lock = asyncio.Lock()
-        
+        self._yt_dlp_update_lock = asyncio.Lock()
+
+        # 追蹤 wrapper 背景任務，避免 cleanup 時遺漏未完成 task
+        self._background_tasks: set[asyncio.Task] = set()
+
         # 背景任務
         self.update_embed_task = self.update_embed
     
@@ -289,6 +292,15 @@ class MusicPlayerCog(commands.Cog):
             )
         except Exception as e:
             logger.warning(f"[MusicPlayerCog] 預載失敗: {e}")
+
+    def _schedule_preload_upcoming(self):
+        """建立可追蹤的預載任務，方便 cleanup 時取消"""
+        task = asyncio.create_task(
+            self._preload_upcoming(),
+            name="music_preload_upcoming"
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
     
     # ==================== UI 更新 ====================
     
@@ -335,7 +347,7 @@ class MusicPlayerCog(commands.Cog):
     async def _show_empty_queue(self):
         """顯示佇列為空的狀態"""
         embed = self.embed_builder.error_embed("播放清單中無音樂")
-        embed.description = "請透過指令 [音樂-新增音樂到播放清單] 來新增音樂"
+        embed.description = "請透過 `/音樂-新增` 來新增音樂"
         
         if self.player_view:
             self.player_view.disable_all()
@@ -545,17 +557,13 @@ class MusicPlayerCog(commands.Cog):
     # ==================== 斜線指令 ====================
     
     @app_commands.command(name="音樂-播放", description="啟動音樂播放器並播放指定的網址")
+    @app_commands.guild_only()
     @app_commands.rename(url="網址")
     @app_commands.describe(url="影片、音樂或播放清單的網址")
     async def start_player(self, interaction: discord.Interaction, url: str):
         """啟動播放器"""
         await interaction.response.defer()
-        
-        # 定期檢查 yt-dlp 更新
-        if time.time() - (self.last_yt_dlp_check or 0) > YTDLP_UPDATE_INTERVAL:
-            await self._check_ytdlp_update()
-            self.last_yt_dlp_check = time.time()
-        
+
         # 檢查初始化狀態
         if not self.ffmpeg_path or not self.player or not self.downloader:
             await interaction.followup.send("播放器尚未初始化完成，請稍後再試。")
@@ -572,11 +580,12 @@ class MusicPlayerCog(commands.Cog):
                 "播放器已經啟動，請使用 `/音樂-新增` 指令。"
             )
             return
+
+        await self._ensure_ytdlp_current()
         
         try:
             # 取得訊息
-            response = await interaction.original_response()
-            self.player_message = await response.channel.fetch_message(response.id)
+            self.player_message = await interaction.original_response()
             
             # 連接語音頻道（帶重試）
             channel = interaction.user.voice.channel
@@ -738,7 +747,7 @@ class MusicPlayerCog(commands.Cog):
                 self.update_embed_task.start()
             
             # 背景預載
-            asyncio.create_task(self._preload_upcoming())
+            self._schedule_preload_upcoming()
             
         except Exception as e:
             logger.exception(f"啟動播放清單時發生錯誤: {e}")
@@ -746,6 +755,7 @@ class MusicPlayerCog(commands.Cog):
             await self.player_message.edit(content=None, embed=embed, view=None)
     
     @app_commands.command(name="音樂-新增", description="新增音樂到播放清單")
+    @app_commands.guild_only()
     @app_commands.rename(url="網址")
     @app_commands.describe(url="影片、音樂或播放清單的網址")
     async def add_music(self, interaction: discord.Interaction, url: str):
@@ -759,6 +769,8 @@ class MusicPlayerCog(commands.Cog):
                 ephemeral=True
             )
             return
+
+        await self._ensure_ytdlp_current()
         
         try:
             is_playlist = self.downloader.is_playlist(url)
@@ -860,13 +872,14 @@ class MusicPlayerCog(commands.Cog):
             await self._refresh_player_ui()
             
             # 背景預載
-            asyncio.create_task(self._preload_upcoming())
+            self._schedule_preload_upcoming()
             
         except Exception as e:
             logger.exception(f"新增播放清單時發生錯誤: {e}")
             await interaction.followup.send("無法新增播放清單，請稍後再試。", ephemeral=True)
     
     @app_commands.command(name="音樂-清單", description="查看當前播放清單")
+    @app_commands.guild_only()
     async def view_playlist(self, interaction: discord.Interaction):
         """查看播放清單"""
         await interaction.response.defer()
@@ -908,9 +921,11 @@ class MusicPlayerCog(commands.Cog):
             )
             
             # 發送訊息
-            await interaction.followup.send(embed=embed, view=pagination_view)
-            response = await interaction.original_response()
-            self.playlist_message = await response.channel.fetch_message(response.id)
+            self.playlist_message = await interaction.followup.send(
+                embed=embed,
+                view=pagination_view,
+                wait=True,
+            )
             
         except Exception as e:
             logger.exception(f"查看播放清單時發生錯誤: {e}")
@@ -962,6 +977,7 @@ class MusicPlayerCog(commands.Cog):
                 pass
     
     @app_commands.command(name="音樂-清空", description="清空播放清單")
+    @app_commands.guild_only()
     async def clear_playlist(self, interaction: discord.Interaction):
         """清空播放清單"""
         await interaction.response.defer()
@@ -976,7 +992,7 @@ class MusicPlayerCog(commands.Cog):
             await self.player.stop()
             
             # 清空佇列
-            await self.player.queue.clear()
+            cleared_count = await self.player.queue.clear()
             
             # 清空快取
             self.player.cache.clear()
@@ -985,7 +1001,7 @@ class MusicPlayerCog(commands.Cog):
             if self.player_message:
                 await self.player_message.edit(view=None)
             
-            embed = self.embed_builder.clear_playlist_embed()
+            embed = self.embed_builder.clear_playlist_embed(cleared_count)
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
@@ -993,6 +1009,7 @@ class MusicPlayerCog(commands.Cog):
             await interaction.followup.send("清理播放清單時發生錯誤，請稍後再試。", ephemeral=True)
     
     @app_commands.command(name="音樂-顯示播放器", description="重新顯示播放器控制面板（將播放器移至最新訊息）")
+    @app_commands.guild_only()
     async def show_player(self, interaction: discord.Interaction):
         """重新顯示播放器"""
         await interaction.response.defer()
@@ -1022,12 +1039,14 @@ class MusicPlayerCog(commands.Cog):
                 )
             else:
                 embed = self.embed_builder.error_embed("播放清單中無音樂")
-                embed.description = "請透過指令 [音樂-新增音樂到播放清單] 來新增音樂"
+                embed.description = "請透過 `/音樂-新增` 來新增音樂"
             
             # 發送新的播放器訊息
-            await interaction.followup.send(embed=embed, view=self.player_view)
-            response = await interaction.original_response()
-            self.player_message = await response.channel.fetch_message(response.id)
+            self.player_message = await interaction.followup.send(
+                embed=embed,
+                view=self.player_view,
+                wait=True,
+            )
             
             # 更新舊訊息（如果存在）
             if old_message:
@@ -1048,6 +1067,7 @@ class MusicPlayerCog(commands.Cog):
             await interaction.followup.send("顯示播放器時發生錯誤，請稍後再試。", ephemeral=True)
     
     @app_commands.command(name="音樂-跳轉", description="跳轉到播放清單中的指定歌曲")
+    @app_commands.guild_only()
     @app_commands.rename(index="歌曲編號")
     @app_commands.describe(index="要跳轉到的歌曲編號（從 1 開始）")
     async def jump_to_song(self, interaction: discord.Interaction, index: int):
@@ -1118,6 +1138,7 @@ class MusicPlayerCog(commands.Cog):
             return []
     
     @app_commands.command(name="音樂-移除", description="移除播放清單中的特定音樂")
+    @app_commands.guild_only()
     @app_commands.rename(index="歌曲編號")
     @app_commands.describe(index="要移除的歌曲編號")
     async def remove_song(self, interaction: discord.Interaction, index: int):
@@ -1158,7 +1179,7 @@ class MusicPlayerCog(commands.Cog):
     
     # ==================== 背景任務 ====================
     
-    @tasks.loop(seconds=15)
+    @tasks.loop(seconds=EMBED_UPDATE_INTERVAL)
     async def update_embed(self):
         """定期更新播放器嵌入"""
         try:
@@ -1213,6 +1234,19 @@ class MusicPlayerCog(commands.Cog):
             # 停止背景任務（優先停止，避免繼續更新 UI）
             if self.update_embed_task.is_running():
                 self.update_embed_task.stop()
+
+            if self.voice_reconnect_loop.is_running():
+                self.voice_reconnect_loop.stop()
+
+            pending_background_tasks = [
+                task for task in self._background_tasks
+                if not task.done()
+            ]
+            for task in pending_background_tasks:
+                task.cancel()
+            if pending_background_tasks:
+                await asyncio.gather(*pending_background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
             
             # 停止播放並斷開連線
             if self.player:
@@ -1231,8 +1265,7 @@ class MusicPlayerCog(commands.Cog):
                 await self.player.queue.clear()
                 
                 # 清理快取（先取消預載，再刪除檔案）
-                self.player.cache.cancel_all_preloads()
-                await asyncio.sleep(0.2)  # 等待預載任務取消
+                await self.player.cache.cancel_all_preloads_and_wait()
                 self.player.cache.clear()
             
             # 重置狀態
@@ -1248,33 +1281,144 @@ class MusicPlayerCog(commands.Cog):
             
         except Exception as e:
             logger.exception(f"清理資源時發生錯誤: {e}")
-    
-    async def _check_ytdlp_update(self):
-        """檢查 yt-dlp 更新"""
+
+    async def _ensure_ytdlp_current(self) -> None:
+        """依使用情況節流檢查，並避免多個指令同時執行 pip。"""
+        now = time.monotonic()
+        if now - (self.last_yt_dlp_check or 0) <= YTDLP_UPDATE_INTERVAL:
+            return
+
+        async with self._yt_dlp_update_lock:
+            now = time.monotonic()
+            if now - (self.last_yt_dlp_check or 0) <= YTDLP_UPDATE_INTERVAL:
+                return
+
+            await self._check_ytdlp_update()
+            self.last_yt_dlp_check = time.monotonic()
+
+    async def _check_ytdlp_update(self) -> None:
+        """先用 pip dry-run 檢查差異，有更新時才安裝。"""
         try:
-            yt_dlp_path = shutil.which("yt-dlp")
-            if yt_dlp_path:
-                logger.debug(f"[YT-DLP] 檢查更新，路徑: {yt_dlp_path}")
-                process = await asyncio.create_subprocess_exec(
-                    "yt-dlp", "-U",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await process.communicate()
-                stdout_str = stdout.decode().strip()
-                stderr_str = stderr.decode().strip()
-                
-                logger.debug(f"[YT-DLP] 更新檢查 returncode={process.returncode}")
-                if stdout_str:
-                    logger.debug(f"[YT-DLP] stdout: {stdout_str}")
-                if stderr_str:
-                    logger.debug(f"[YT-DLP] stderr: {stderr_str}")
-                if not stdout_str and not stderr_str:
-                    logger.debug("[YT-DLP] 更新檢查完成（無輸出）")
-            else:
-                logger.warning("[YT-DLP] 找不到 yt-dlp，請確認已安裝")
+            logger.debug("[YT-DLP] 使用 pip dry-run 檢查執行期更新")
+
+            stdout, _, returncode = await self._run_update_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "install",
+                    "--dry-run",
+                    "--quiet",
+                    "--report",
+                    "-",
+                    "--upgrade",
+                    "yt-dlp",
+                    "yt-dlp-ejs",
+                ],
+                "pip dry-run yt-dlp yt-dlp-ejs",
+            )
+
+            if returncode != 0:
+                logger.warning("[YT-DLP] pip dry-run 失敗，本次不執行更新")
+                return
+
+            try:
+                report = json.loads(stdout)
+            except json.JSONDecodeError as error:
+                logger.warning(f"[YT-DLP] 無法解析 pip dry-run 報告: {error}")
+                return
+
+            pending_installs = report.get("install", [])
+            if not pending_installs:
+                logger.debug("[YT-DLP] yt-dlp 與 yt-dlp-ejs 已是最新版本")
+                return
+
+            versions = [
+                f"{item.get('metadata', {}).get('name', 'unknown')}=="
+                f"{item.get('metadata', {}).get('version', 'unknown')}"
+                for item in pending_installs
+            ]
+            logger.info(f"[YT-DLP] 發現可用更新: {', '.join(versions)}")
+
+            _, _, returncode = await self._run_update_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "install",
+                    "--upgrade",
+                    "yt-dlp",
+                    "yt-dlp-ejs",
+                ],
+                "pip install --upgrade yt-dlp yt-dlp-ejs",
+                timeout=300,
+            )
+
+            if returncode == 0:
+                logger.info("[YT-DLP] pip 更新流程完成")
+                return
+
+            logger.warning("[YT-DLP] pip 更新失敗，退回 yt-dlp -U")
+            await self._run_update_command(
+                [sys.executable, "-m", "yt_dlp", "-U"],
+                "yt-dlp -U",
+            )
         except Exception as e:
             logger.error(f"[YT-DLP] 檢查更新時發生錯誤: {type(e).__name__}: {e}")
+
+    async def _run_update_command(
+        self,
+        args: list[str],
+        label: str,
+        timeout: int = 120,
+    ) -> tuple[str, str, int]:
+        """執行更新命令，逾時時確保程序被回收"""
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            await self._terminate_process(process, label)
+            raise
+
+        stdout_str = stdout.decode(errors="replace").strip()
+        stderr_str = stderr.decode(errors="replace").strip()
+
+        logger.debug(f"[YT-DLP] {label} returncode={process.returncode}")
+        if stdout_str:
+            logger.debug(f"[YT-DLP] {label} stdout: {stdout_str}")
+        if stderr_str:
+            logger.debug(f"[YT-DLP] {label} stderr: {stderr_str}")
+
+        return stdout_str, stderr_str, process.returncode or 0
+
+    async def _terminate_process(
+        self,
+        process: asyncio.subprocess.Process,
+        label: str,
+    ) -> None:
+        """逾時時安全終止更新程序"""
+        if process.returncode is not None:
+            return
+
+        logger.warning(f"[YT-DLP] 更新程序逾時，終止中: {label}")
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning(f"[YT-DLP] 更新程序終止後仍未回收: {label}")
     
     # ==================== 事件監聯 ====================
     
@@ -1308,7 +1452,7 @@ class MusicPlayerCog(commands.Cog):
             else:
                 logger.debug("Bot 離開語音頻道（無需重連）")
     
-    @tasks.loop(seconds=15)
+    @tasks.loop(seconds=RECONNECT_INTERVAL)
     async def voice_reconnect_loop(self):
         """自動重連任務"""
         try:

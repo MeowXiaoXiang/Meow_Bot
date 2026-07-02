@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Callable
 from loguru import logger
 
+from ..constants import (
+    YTDLP_DOWNLOAD_TIMEOUT,
+    YTDLP_EXTRACT_TIMEOUT,
+    YTDLP_PLAYLIST_TIMEOUT,
+    YTDLP_PROCESS_TIMEOUT,
+)
+
 
 class YTDLPDownloader:
     """
@@ -100,7 +107,11 @@ class YTDLPDownloader:
     
     # === 公開方法 ===
     
-    async def extract_info(self, url: str, timeout: int = 30) -> Optional[dict]:
+    async def extract_info(
+        self,
+        url: str,
+        timeout: int = YTDLP_EXTRACT_TIMEOUT
+    ) -> Optional[dict]:
         """
         提取單曲資訊
         
@@ -123,18 +134,11 @@ class YTDLPDownloader:
         logger.debug(f"[yt-dlp] extract_info 執行指令: {' '.join(args)}")
         
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                ),
-                timeout=5  # 建立進程的超時
-            )
-            
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout
+            proc = await self._create_process(*args)
+            stdout, stderr = await self._communicate_with_timeout(
+                proc,
+                timeout=timeout,
+                context=f"extract_info: {url}"
             )
             
             stdout_str = stdout.decode().strip()
@@ -162,7 +166,11 @@ class YTDLPDownloader:
             logger.error(f"extract_info 錯誤: {type(e).__name__}: {e}")
             return None
     
-    async def extract_playlist(self, url: str, timeout: int = 120) -> Optional[List[dict]]:
+    async def extract_playlist(
+        self,
+        url: str,
+        timeout: int = YTDLP_PLAYLIST_TIMEOUT
+    ) -> Optional[List[dict]]:
         """
         提取播放清單資訊
         
@@ -185,15 +193,11 @@ class YTDLPDownloader:
         logger.debug(f"[yt-dlp] extract_playlist 執行指令: {' '.join(args)}")
         
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout
+            proc = await self._create_process(*args)
+            stdout, stderr = await self._communicate_with_timeout(
+                proc,
+                timeout=timeout,
+                context=f"extract_playlist: {url}"
             )
             
             stdout_str = stdout.decode().strip()
@@ -234,7 +238,7 @@ class YTDLPDownloader:
         self,
         url: str,
         song_id: Optional[str] = None,
-        timeout: int = 180
+        timeout: int = YTDLP_DOWNLOAD_TIMEOUT
     ) -> Tuple[Optional[dict], Optional[Path]]:
         """
         下載影片並轉換為 opus 格式
@@ -291,25 +295,15 @@ class YTDLPDownloader:
         logger.debug(f"[yt-dlp] download 執行指令: {' '.join(args)}")
         
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            proc = await self._create_process(*args)
+            stdout_str, stderr_str = await self._monitor_download_process(
+                proc,
+                song_id=song_id,
+                timeout=timeout,
             )
             
-            # 非同步讀取進度（只在有回調時處理，否則靜默）
-            async for line in proc.stdout:
-                line_str = line.decode().strip()
-                if self.progress_callback and "[download]" in line_str:
-                    progress = self._parse_progress(line_str)
-                    if progress is not None:
-                        self.progress_callback(song_id, progress)
-            
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
-            
             if proc.returncode != 0:
-                stderr_content = await proc.stderr.read()
-                error_msg = stderr_content.decode().strip()
+                error_msg = stderr_str or stdout_str or "未知下載錯誤"
                 logger.error(f"下載失敗: {error_msg}")
                 return self._create_error_response(error_msg, url), None
             
@@ -376,13 +370,12 @@ class YTDLPDownloader:
         ]
         
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            proc = await self._create_process(*args)
+            _, stderr = await self._communicate_with_timeout(
+                proc,
+                timeout=YTDLP_DOWNLOAD_TIMEOUT,
+                context=f"ffmpeg convert: {song_id}"
             )
-            
-            _, stderr = await proc.communicate()
             
             if proc.returncode != 0:
                 logger.error(f"FFmpeg 轉換失敗: {stderr.decode()}")
@@ -401,6 +394,110 @@ class YTDLPDownloader:
             # 異常時也要清理原始檔
             self._safe_delete(input_file)
             return None
+
+    async def _create_process(self, *args: str) -> asyncio.subprocess.Process:
+        """
+        建立子程序，避免卡在 create_subprocess_exec
+        """
+        return await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            ),
+            timeout=YTDLP_PROCESS_TIMEOUT
+        )
+
+    async def _communicate_with_timeout(
+        self,
+        proc: asyncio.subprocess.Process,
+        timeout: int,
+        context: str,
+    ) -> tuple[bytes, bytes]:
+        """
+        等待子程序完成；超時或取消時確保程序被終止並回收
+        """
+        try:
+            return await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            await self._terminate_process(proc, context)
+            raise
+
+    async def _monitor_download_process(
+        self,
+        proc: asyncio.subprocess.Process,
+        song_id: str,
+        timeout: int,
+    ) -> tuple[str, str]:
+        """
+        監控下載程序，同時排空 stdout/stderr，避免 pipe 滿而卡住
+        """
+        stdout_buffer: list[str] = []
+        stderr_buffer: list[str] = []
+
+        async def read_stdout() -> None:
+            if not proc.stdout:
+                return
+
+            async for line in proc.stdout:
+                line_str = line.decode(errors="replace").strip()
+                if line_str:
+                    stdout_buffer.append(line_str)
+
+                if self.progress_callback and "[download]" in line_str:
+                    progress = self._parse_progress(line_str)
+                    if progress is not None:
+                        self.progress_callback(song_id, progress)
+
+        async def read_stderr() -> None:
+            if not proc.stderr:
+                return
+
+            async for line in proc.stderr:
+                line_str = line.decode(errors="replace").strip()
+                if line_str:
+                    stderr_buffer.append(line_str)
+
+        stdout_task = asyncio.create_task(read_stdout(), name=f"yt_dlp_stdout_{song_id}")
+        stderr_task = asyncio.create_task(read_stderr(), name=f"yt_dlp_stderr_{song_id}")
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await self._terminate_process(proc, f"download: {song_id}")
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            raise
+
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        return "\n".join(stdout_buffer), "\n".join(stderr_buffer)
+
+    async def _terminate_process(
+        self,
+        proc: asyncio.subprocess.Process,
+        context: str,
+    ) -> None:
+        """
+        安全終止仍在執行中的子程序，避免殭屍進程
+        """
+        if proc.returncode is not None:
+            return
+
+        logger.warning(f"[yt-dlp] 強制終止逾時程序: {context}")
+
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            logger.warning(f"[yt-dlp] 無法終止程序 {context}: {e}")
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning(f"[yt-dlp] 程序終止後仍未正常回收: {context}")
     
     def _safe_delete(self, file: Path) -> bool:
         """安全刪除檔案，失敗時僅記錄警告"""
