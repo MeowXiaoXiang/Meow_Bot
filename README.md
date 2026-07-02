@@ -1,7 +1,7 @@
 # Meow_Bot
 
-![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python)
-![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?logo=discord&logoColor=white)
+![Python 3.13](https://img.shields.io/badge/Python-3.13-blue?logo=python)
+![discord.py 2.7](https://img.shields.io/badge/discord.py-2.7-5865F2?logo=discord&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Version v1.1](https://img.shields.io/badge/Version-v1.1-orange)
 
@@ -32,8 +32,9 @@
 
 ### 前置需求
 
-- Python 3.12
+- Python 3.13
 - FFmpeg（音樂播放需要，Windows 會自動下載）
+- Deno 2.3+ 或 Node.js 22+（本機若需要完整 YouTube 支援時建議安裝）
 - Discord Bot Token
 
 ### 安裝步驟
@@ -48,19 +49,19 @@
 2. **建立虛擬環境**
 
    ```bash
-   python -m venv venv
+   python -m venv .venv
    
    # Windows
-   .\venv\Scripts\activate
+   .\.venv\Scripts\activate
    
    # Linux/Mac
-   source venv/bin/activate
+   source .venv/bin/activate
    ```
 
 3. **安裝依賴套件**
 
    ```bash
-   pip install -r requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
 4. **設定環境變數**
@@ -90,6 +91,8 @@ docker compose logs -f
 
 記得在 `compose.yml` 同目錄建立 `.env` 檔案設定 Token。
 
+Docker 映像會依目標架構自動安裝 `Deno 2.9.0`（支援 `amd64` / `arm64`），供 `yt-dlp` / `yt-dlp-ejs` 執行 JavaScript 萃取流程使用。Deno 版本可透過 `DENO_VERSION` build arg 覆寫。
+
 ## 📝 指令列表
 
 ### 音樂指令
@@ -108,9 +111,9 @@ docker compose logs -f
 
 | 指令 | 說明 |
 |------|------|
-| `/avatar <用戶>` | 查看指定用戶的頭像 |
-| `/tic_tac_toe <對手>` | 開始井字遊戲 |
-| `/minesweeper` | 開始踩地雷遊戲 |
+| `/查看成員頭貼` | 查看指定用戶的頭像 |
+| `/小遊戲-ooxx` | 開始井字遊戲 |
+| `/踩地雷` | 開始踩地雷遊戲 |
 
 ## 📁 專案結構
 
@@ -143,6 +146,13 @@ Meow_Bot/
 |---------|------|--------|
 | `DISCORD_BOT_TOKEN` | Discord 機器人 Token | （必填） |
 | `DEBUG` | 開啟除錯模式 | `false` |
+
+## 🔧 版本說明
+
+- 專案目前以 **Python 3.13** 為目標版本；Docker 會跟隨 `python:3.13-slim` 取得最新 3.13 patch
+- 依賴已更新為與 **Python 3.13** 相容的版本，音樂功能改以 `discord.py[voice]` 安裝語音相依
+- 在 Python 3.13 上，`discord.py[voice]` 會一併解析 voice 需要的 `audioop-lts` / `davey` 等相依
+- Bot 會保留執行期 `yt-dlp` 自動更新設計；音樂功能使用時至多每 24 小時以 pip dry-run 檢查一次差異，只有發現新版才安裝，正式更新失敗時才退回 `yt-dlp -U`
 
 ### 音樂播放器設定
 
