@@ -1,0 +1,16 @@
+# Store text consistently for Linux containers and cross-platform development.
+* text=auto eol=lf
+
+# Common binary formats must never be newline-normalized.
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.so binary
+*.pyc binary
