@@ -1,0 +1,16 @@
+.git
+.github/
+.venv/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.env
+.env.*
+!.env.template
+
+logs/
+temp/
+module/music_player/ffmpeg/bin/
