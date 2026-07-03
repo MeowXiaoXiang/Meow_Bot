@@ -71,6 +71,7 @@
    ```env
    DISCORD_BOT_TOKEN=你的機器人Token
    DEBUG=false
+   MAINTAINER_ID=
    ```
 
 5. **啟動機器人**
@@ -146,6 +147,7 @@ Meow_Bot/
 |---------|------|--------|
 | `DISCORD_BOT_TOKEN` | Discord 機器人 Token | （必填） |
 | `DEBUG` | 開啟除錯模式 | `false` |
+| `MAINTAINER_ID` | 指定接收錯誤回報的 Discord 使用者 ID，不填時回退到 application owner | （選填） |
 
 ## 🔧 版本說明
 

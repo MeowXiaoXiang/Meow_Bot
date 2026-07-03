@@ -118,7 +118,19 @@ class MeowBot(commands.Bot):
         if application is None:
             application = await self.application_info()
 
-        self.maintainer_id = application.owner.id
+        configured_maintainer_id = os.getenv("MAINTAINER_ID", "").strip()
+        if configured_maintainer_id:
+            try:
+                self.maintainer_id = int(configured_maintainer_id)
+            except ValueError:
+                logger.warning(
+                    "[初始化] MAINTAINER_ID 不是有效的 Discord 使用者 ID，"
+                    "將回退到 application owner"
+                )
+                self.maintainer_id = application.owner.id
+        else:
+            self.maintainer_id = application.owner.id
+
         if application.team is None:
             self.owner_id = application.owner.id
             self.owner_ids = set()

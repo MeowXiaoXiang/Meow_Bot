@@ -8,6 +8,7 @@ services:
     environment:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
       DEBUG: ${DEBUG:-false}
+      MAINTAINER_ID: ${MAINTAINER_ID:-}
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
