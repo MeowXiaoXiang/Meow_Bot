@@ -148,21 +148,30 @@ class MusicPlayerCog(commands.Cog):
         
         logger.debug("[MusicPlayerCog] 歌曲自然結束，準備處理下一首")
         
-        # 檢查是否有手動操作（避免重複觸發）
-        if self.player.state.last_manual_operation_time:
-            time_since_manual = time.time() - self.player.state.last_manual_operation_time
-            if time_since_manual < MANUAL_OPERATION_DEBOUNCE:
-                logger.debug(f"檢測到最近的手動操作 ({time_since_manual:.2f}s 前)，忽略自動切歌")
+        async with self._play_lock:
+            if self.manual_disconnect or not self.player or not self.player.is_connected:
+                logger.debug("[MusicPlayerCog] 歌曲結束後狀態已變更，忽略自動切歌")
                 return
-        
-        # 嘗試播放下一首
-        try:
-            await self._play_next_song()
-        except MusicError as e:
-            logger.error(f"[MusicPlayerCog] 播放下一首時發生錯誤: {e}")
-            await self._show_error(e.user_message)
-    
+
+            # 檢查是否有手動操作（避免重複觸發）
+            if self.player.state.last_manual_operation_time:
+                time_since_manual = time.time() - self.player.state.last_manual_operation_time
+                if time_since_manual < MANUAL_OPERATION_DEBOUNCE:
+                    logger.debug(f"檢測到最近的手動操作 ({time_since_manual:.2f}s 前)，忽略自動切歌")
+                    return
+
+            # 嘗試播放下一首
+            try:
+                await self._play_next_song_locked()
+            except MusicError as e:
+                logger.error(f"[MusicPlayerCog] 播放下一首時發生錯誤: {e}")
+                await self._show_error(e.user_message)
+
     async def _play_next_song(self):
+        async with self._play_lock:
+            await self._play_next_song_locked()
+
+    async def _play_next_song_locked(self):
         """播放下一首歌曲（包含失敗重試邏輯）"""
         if not self.player:
             return
@@ -174,7 +183,7 @@ class MusicPlayerCog(commands.Cog):
         if queue.loop and len(queue) == 1:
             current_song = queue.current
             if current_song:
-                success = await self._play_song(current_song)
+                success = await self._play_song_internal(current_song)
                 if not success:
                     await self._show_error("無法播放此歌曲")
             return
@@ -204,7 +213,7 @@ class MusicPlayerCog(commands.Cog):
                 return
             
             # 嘗試播放
-            success = await self._play_song(next_song)
+            success = await self._play_song_internal(next_song)
             if success:
                 return  # 成功播放，結束
             
@@ -336,13 +345,65 @@ class MusicPlayerCog(commands.Cog):
     async def _update_player_message(self, embed: discord.Embed):
         """更新播放器訊息"""
         if self.player_message:
-            try:
-                await self.player_message.edit(embed=embed, view=self.player_view)
-            except discord.NotFound:
-                logger.warning("播放器訊息已被刪除")
-                self.player_message = None
-            except discord.HTTPException as e:
-                logger.error(f"更新播放器訊息失敗: {e}")
+            await self._edit_player_message(embed=embed, view=self.player_view)
+
+    async def _bind_persistent_message(
+        self,
+        message: discord.Message | None,
+    ) -> discord.Message | None:
+        """將 interaction/webhook 訊息重新綁定成一般可長期編輯的訊息物件。"""
+        if message is None:
+            return None
+
+        channel = getattr(message, "channel", None)
+        fetch_message = getattr(channel, "fetch_message", None)
+        if fetch_message is None:
+            return message
+
+        try:
+            return await fetch_message(message.id)
+        except discord.HTTPException as error:
+            logger.debug(f"重新綁定訊息失敗，沿用既有引用: {error}")
+            return message
+
+    async def _edit_message_safely(
+        self,
+        message: discord.Message | None,
+        **kwargs,
+    ) -> discord.Message | None:
+        """安全編輯訊息，必要時在 webhook token 過期後重新綁定重試。"""
+        if message is None:
+            return None
+
+        try:
+            await message.edit(**kwargs)
+            return message
+        except discord.NotFound:
+            logger.warning("播放器訊息已被刪除")
+            return None
+        except discord.HTTPException as error:
+            if getattr(error, "code", None) == 50027:
+                logger.warning("播放器訊息 webhook token 已失效，嘗試重新綁定一般訊息引用")
+                rebound_message = await self._bind_persistent_message(message)
+                if rebound_message is not None and rebound_message is not message:
+                    try:
+                        await rebound_message.edit(**kwargs)
+                        return rebound_message
+                    except discord.NotFound:
+                        logger.warning("重新綁定後的播放器訊息已不存在")
+                        return None
+                    except discord.HTTPException as rebound_error:
+                        logger.error(f"重新綁定後仍無法更新播放器訊息: {rebound_error}")
+                        return rebound_message
+
+            logger.error(f"更新播放器訊息失敗: {error}")
+            return message
+
+    async def _edit_player_message(self, **kwargs) -> bool:
+        """更新目前追蹤中的播放器訊息，並維持最新的訊息引用。"""
+        updated_message = await self._edit_message_safely(self.player_message, **kwargs)
+        self.player_message = updated_message
+        return updated_message is not None
     
     async def _show_empty_queue(self):
         """顯示佇列為空的狀態"""
@@ -405,6 +466,7 @@ class MusicPlayerCog(commands.Cog):
             # 嘗試重新播放當前歌曲
             current_song = self.player.queue.current
             if current_song:
+                self.player.state.mark_manual_operation()
                 await self._play_song(current_song)
     
     async def _handle_next(self):
@@ -548,7 +610,7 @@ class MusicPlayerCog(commands.Cog):
                     description="感謝使用！使用 `/音樂-播放` 可以重新啟動",
                     color=discord.Color.green()
                 )
-                await message.edit(embed=embed, view=None)
+                await self._edit_message_safely(message, embed=embed, view=None)
             except discord.NotFound:
                 pass
             except discord.HTTPException:
@@ -584,8 +646,9 @@ class MusicPlayerCog(commands.Cog):
         await self._ensure_ytdlp_current()
         
         try:
-            # 取得訊息
-            self.player_message = await interaction.original_response()
+            # 取得訊息，並立即重新綁定成一般 channel message
+            original_message = await interaction.original_response()
+            self.player_message = await self._bind_persistent_message(original_message)
             
             # 連接語音頻道（帶重試）
             channel = interaction.user.voice.channel
@@ -627,7 +690,7 @@ class MusicPlayerCog(commands.Cog):
             info = await self.downloader.extract_info(url)
             if not info:
                 embed = self.embed_builder.error_embed("無法解析音樂資訊")
-                await self.player_message.edit(content=None, embed=embed, view=None)
+                await self._edit_player_message(content=None, embed=embed, view=None)
                 return
             
             # 建立 Song 物件（確保 duration 為 int）
@@ -651,7 +714,7 @@ class MusicPlayerCog(commands.Cog):
             _, file_path = await self.downloader.download(url)
             if not file_path:
                 embed = self.embed_builder.error_embed("下載音樂失敗")
-                await self.player_message.edit(content=None, embed=embed, view=None)
+                await self._edit_player_message(content=None, embed=embed, view=None)
                 return
             
             # 加入佇列和快取
@@ -673,7 +736,7 @@ class MusicPlayerCog(commands.Cog):
                 is_looping=self.player.queue.loop,
                 is_playing=True,
             )
-            await self.player_message.edit(content=None, embed=embed, view=self.player_view)
+            await self._edit_player_message(content=None, embed=embed, view=self.player_view)
             
             # 啟動定期更新任務
             if not self.update_embed_task.is_running():
@@ -682,7 +745,7 @@ class MusicPlayerCog(commands.Cog):
         except Exception as e:
             logger.exception(f"啟動單曲播放時發生錯誤: {e}")
             embed = self.embed_builder.error_embed(f"錯誤: {e}")
-            await self.player_message.edit(content=None, embed=embed, view=None)
+            await self._edit_player_message(content=None, embed=embed, view=None)
     
     async def _handle_playlist_start(self, interaction: discord.Interaction, url: str):
         """處理播放清單啟動"""
@@ -691,7 +754,7 @@ class MusicPlayerCog(commands.Cog):
             entries = await self.downloader.extract_playlist(url)
             if not entries:
                 embed = self.embed_builder.error_embed("無法解析播放清單或播放清單為空")
-                await self.player_message.edit(content=None, embed=embed, view=None)
+                await self._edit_player_message(content=None, embed=embed, view=None)
                 return
             
             # 建立 Song 物件並加入佇列
@@ -721,7 +784,7 @@ class MusicPlayerCog(commands.Cog):
             _, file_path = await self.downloader.download(first_song.url)
             if not file_path:
                 embed = self.embed_builder.error_embed("下載第一首歌曲失敗")
-                await self.player_message.edit(content=None, embed=embed, view=None)
+                await self._edit_player_message(content=None, embed=embed, view=None)
                 return
             
             # 加入快取並播放
@@ -740,7 +803,7 @@ class MusicPlayerCog(commands.Cog):
                 is_looping=self.player.queue.loop,
                 is_playing=True,
             )
-            await self.player_message.edit(content=None, embed=embed, view=self.player_view)
+            await self._edit_player_message(content=None, embed=embed, view=self.player_view)
             
             # 啟動定期更新任務
             if not self.update_embed_task.is_running():
@@ -752,7 +815,7 @@ class MusicPlayerCog(commands.Cog):
         except Exception as e:
             logger.exception(f"啟動播放清單時發生錯誤: {e}")
             embed = self.embed_builder.error_embed(f"錯誤: {e}")
-            await self.player_message.edit(content=None, embed=embed, view=None)
+            await self._edit_player_message(content=None, embed=embed, view=None)
     
     @app_commands.command(name="音樂-新增", description="新增音樂到播放清單")
     @app_commands.guild_only()
@@ -892,7 +955,10 @@ class MusicPlayerCog(commands.Cog):
             # 清除舊的播放清單訊息
             if self.playlist_message:
                 try:
-                    await self.playlist_message.edit(view=None)
+                    self.playlist_message = await self._edit_message_safely(
+                        self.playlist_message,
+                        view=None,
+                    )
                 except:
                     pass
                 self.playlist_message = None
@@ -926,6 +992,7 @@ class MusicPlayerCog(commands.Cog):
                 view=pagination_view,
                 wait=True,
             )
+            self.playlist_message = await self._bind_persistent_message(self.playlist_message)
             
         except Exception as e:
             logger.exception(f"查看播放清單時發生錯誤: {e}")
@@ -963,7 +1030,11 @@ class MusicPlayerCog(commands.Cog):
                 total_pages=total_pages,
             )
             
-            await self.playlist_message.edit(embed=embed, view=pagination_view)
+            self.playlist_message = await self._edit_message_safely(
+                self.playlist_message,
+                embed=embed,
+                view=pagination_view,
+            )
             
         except Exception as e:
             logger.exception(f"翻頁時發生錯誤: {e}")
@@ -972,7 +1043,10 @@ class MusicPlayerCog(commands.Cog):
         """播放清單視圖超時"""
         if self.playlist_message:
             try:
-                await self.playlist_message.edit(view=None)
+                self.playlist_message = await self._edit_message_safely(
+                    self.playlist_message,
+                    view=None,
+                )
             except:
                 pass
     
@@ -999,7 +1073,7 @@ class MusicPlayerCog(commands.Cog):
             
             # 更新 UI
             if self.player_message:
-                await self.player_message.edit(view=None)
+                await self._edit_player_message(view=None)
             
             embed = self.embed_builder.clear_playlist_embed(cleared_count)
             await interaction.followup.send(embed=embed)
@@ -1047,6 +1121,7 @@ class MusicPlayerCog(commands.Cog):
                 view=self.player_view,
                 wait=True,
             )
+            self.player_message = await self._bind_persistent_message(self.player_message)
             
             # 更新舊訊息（如果存在）
             if old_message:
@@ -1056,7 +1131,7 @@ class MusicPlayerCog(commands.Cog):
                         description="請使用上方的新播放器控制面板",
                         color=discord.Color.greyple()
                     )
-                    await old_message.edit(embed=old_embed, view=None)
+                    await self._edit_message_safely(old_message, embed=old_embed, view=None)
                 except discord.NotFound:
                     pass  # 舊訊息已被刪除
                 except discord.HTTPException:
@@ -1464,7 +1539,7 @@ class MusicPlayerCog(commands.Cog):
                     embed = self.embed_builder.error_embed(
                         "❌ 無法自動重連語音頻道，請手動重新啟動播放器"
                     )
-                    await self.player_message.edit(embed=embed, view=None)
+                    await self._edit_player_message(embed=embed, view=None)
                 
                 await self._cleanup_resources()
                 return

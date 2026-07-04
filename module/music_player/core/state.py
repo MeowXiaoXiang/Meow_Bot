@@ -39,11 +39,17 @@ class PlaybackState:
     
     # 當前歌曲資訊（可選）
     _current_song_id: Optional[str] = field(default=None, repr=False)
+    _playback_session_id: int = field(default=0, repr=False)
     
     # 手動操作時間戳（用於防止回調衝突）
     _last_manual_operation_time: float = field(default=0, repr=False)
     
-    def start(self, duration: int, song_id: Optional[str] = None) -> None:
+    def start(
+        self,
+        duration: int,
+        song_id: Optional[str] = None,
+        playback_session_id: int = 0,
+    ) -> None:
         """
         開始播放
         
@@ -57,6 +63,7 @@ class PlaybackState:
         self._total_paused = 0
         self._duration = duration
         self._current_song_id = song_id
+        self._playback_session_id = playback_session_id
     
     def pause(self) -> bool:
         """
@@ -92,6 +99,7 @@ class PlaybackState:
         self._pause_start = 0
         self._total_paused = 0
         self._current_song_id = None
+        self._playback_session_id = 0
     
     def reset(self) -> None:
         """完全重置（包括 duration）"""
@@ -147,6 +155,11 @@ class PlaybackState:
     def current_song_id(self) -> Optional[str]:
         """當前播放的歌曲 ID"""
         return self._current_song_id
+
+    @property
+    def playback_session_id(self) -> int:
+        """當前播放世代 ID，用於忽略過期的播放結束回調"""
+        return self._playback_session_id
     
     @property
     def is_finished(self) -> bool:

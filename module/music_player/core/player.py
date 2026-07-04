@@ -107,6 +107,8 @@ class MusicPlayer:
         
         # 內部狀態
         self._is_stopping = False  # 防止遞迴呼叫
+        self._playback_session_id = 0
+        self._ignored_playback_session_ids: set[int] = set()
         
         logger.debug(f"MusicPlayer 初始化: cache_dir={cache_dir}")
     
@@ -234,7 +236,10 @@ class MusicPlayer:
                 return None
         
         # 停止當前播放（邊界檢查：確保 voice_client 存在）
-        if self._voice_client and self._voice_client.is_playing():
+        if self._voice_client and (
+            self._voice_client.is_playing() or self._voice_client.is_paused()
+        ):
+            self._mark_current_playback_stale()
             self._voice_client.stop()
         
         # 建立音訊源（使用區域變數 cache_path）
@@ -247,6 +252,8 @@ class MusicPlayer:
             logger.error(f"建立音訊源失敗: {e}")
             raise PlaybackError(str(e))
         
+        playback_session_id = self._next_playback_session_id()
+
         # 開始播放（邊界檢查：確保 voice_client 仍然存在）
         if not self._voice_client:
             logger.error("語音客戶端已失效")
@@ -254,11 +261,17 @@ class MusicPlayer:
         
         self._voice_client.play(
             audio_source,
-            after=self._on_playback_finished
+            after=lambda error, session_id=playback_session_id: (
+                self._on_playback_finished(session_id, error)
+            ),
         )
         
         # 更新狀態
-        self.state.start(duration=song.duration, song_id=song.id)
+        self.state.start(
+            duration=song.duration,
+            song_id=song.id,
+            playback_session_id=playback_session_id,
+        )
         
         logger.debug(f"開始播放: {song.title}")
         
@@ -332,8 +345,11 @@ class MusicPlayer:
         停止播放並重置狀態
         """
         self._is_stopping = True
+        self._mark_current_playback_stale()
         
-        if self._voice_client and self._voice_client.is_playing():
+        if self._voice_client and (
+            self._voice_client.is_playing() or self._voice_client.is_paused()
+        ):
             self._voice_client.stop()
         
         self.state.stop()
@@ -517,7 +533,11 @@ class MusicPlayer:
     
     # === 內部方法 ===
     
-    def _on_playback_finished(self, error: Optional[Exception]) -> None:
+    def _on_playback_finished(
+        self,
+        playback_session_id: int,
+        error: Optional[Exception],
+    ) -> None:
         """
         播放完成的回調（由 Discord 音訊系統呼叫）
         
@@ -527,7 +547,21 @@ class MusicPlayer:
             logger.error(f"播放錯誤: {error}")
         
         # 如果是手動停止，不自動播放下一首
+        if playback_session_id in self._ignored_playback_session_ids:
+            self._ignored_playback_session_ids.discard(playback_session_id)
+            logger.debug(
+                f"忽略已失效的播放結束回調: session={playback_session_id}"
+            )
+            return
+
         if self._is_stopping:
+            return
+
+        if playback_session_id != self._playback_session_id:
+            logger.debug(
+                "忽略過期的播放結束回調: "
+                f"session={playback_session_id}, active={self._playback_session_id}"
+            )
             return
         
         # 使用 call_soon_threadsafe 確保線程安全
@@ -537,14 +571,22 @@ class MusicPlayer:
             return
         
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._handle_song_end())
+            lambda: asyncio.create_task(self._handle_song_end(playback_session_id))
         )
     
-    async def _handle_song_end(self) -> None:
+    async def _handle_song_end(self, playback_session_id: int) -> None:
         """
         處理歌曲自然結束
         """
+        if playback_session_id != self._playback_session_id:
+            logger.debug(
+                "忽略過期的歌曲結束處理: "
+                f"session={playback_session_id}, active={self._playback_session_id}"
+            )
+            return
+
         logger.debug("歌曲播放結束")
+        self._playback_session_id = 0
         self.state.stop()
         
         # 呼叫外部回調（如果有設定）
@@ -561,6 +603,19 @@ class MusicPlayer:
             await self.next()
         else:
             logger.info("播放清單已結束")
+
+    def _next_playback_session_id(self) -> int:
+        """產生新的播放世代 ID。"""
+        self._playback_session_id += 1
+        return self._playback_session_id
+
+    def _mark_current_playback_stale(self) -> None:
+        """將當前播放標記為過期，讓晚到的 after 回調自動失效。"""
+        current_session_id = self._playback_session_id
+        if current_session_id <= 0:
+            return
+
+        self._ignored_playback_session_ids.add(current_session_id)
     
     async def _safe_callback(self, callback: Callable) -> None:
         """
