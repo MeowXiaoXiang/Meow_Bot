@@ -78,7 +78,7 @@ class ManagementCommand(commands.Cog):
         if full_path is None:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="❌ 模組不存在",
+                    title="模組不存在",
                     description=f"找不到 `{extension}`",
                     color=discord.Color.red(),
                 ),
@@ -89,7 +89,7 @@ class ManagementCommand(commands.Cog):
         if action == "unload" and full_path == self.bot.management_extension:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="❌ 無法卸載核心模組",
+                    title="無法卸載核心模組",
                     description="`management` 是核心管理模組，不能卸載。",
                     color=discord.Color.red(),
                 ),
@@ -114,7 +114,7 @@ class ManagementCommand(commands.Cog):
 
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title=f"✅ 已{zh_action}模組",
+                    title=f"已{zh_action}模組",
                     description=f"`{extension}`",
                     color=discord.Color.green(),
                 ),
@@ -124,7 +124,7 @@ class ManagementCommand(commands.Cog):
         except commands.ExtensionAlreadyLoaded:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="⚠ 模組已載入",
+                    title="模組已載入",
                     description=f"`{extension}` 已載入過",
                     color=discord.Color.yellow(),
                 ),
@@ -133,7 +133,7 @@ class ManagementCommand(commands.Cog):
         except commands.ExtensionNotLoaded:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="⚠ 模組尚未載入",
+                    title="模組尚未載入",
                     description=f"`{extension}` 尚未載入",
                     color=discord.Color.orange(),
                 ),
@@ -142,7 +142,7 @@ class ManagementCommand(commands.Cog):
         except commands.ExtensionNotFound:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="❌ 模組不存在",
+                    title="模組不存在",
                     description=f"找不到 `{extension}`",
                     color=discord.Color.red(),
                 ),
@@ -151,7 +151,7 @@ class ManagementCommand(commands.Cog):
         except Exception as error:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="❌ 發生錯誤",
+                    title="發生錯誤",
                     description=str(error)[:4096],
                     color=discord.Color.red(),
                 ),
@@ -238,8 +238,8 @@ class ManagementCommand(commands.Cog):
 
         active_extensions = set(self.bot.extensions)
         module_status = "\n".join(
-            f"- {name} "
-            f"{'✅' if self.bot.extension_path(name) in active_extensions else '❌'}"
+            f"- {name}: "
+            f"{'已載入' if self.bot.extension_path(name) in active_extensions else '未載入'}"
             for name in self.bot.discover_extension_names()
         )
         embed.add_field(
@@ -269,7 +269,7 @@ class ManagementCommand(commands.Cog):
     async def restart(self, interaction: discord.Interaction) -> None:
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message(
-                "❌ 你不是機器人擁有者，無法使用此指令。",
+                "你不是機器人擁有者，無法使用此指令。",
                 ephemeral=True,
             )
             return
@@ -306,14 +306,14 @@ class RestartConfirmView(discord.ui.View):
         self.disable_all_buttons()
         try:
             await self.interaction.edit_original_response(
-                content="⚠️ 重啟操作已過期，請重新執行指令。",
+                content="重啟操作已過期，請重新執行指令。",
                 view=self,
             )
         except discord.HTTPException as error:
             logger.warning(f"[重啟按鈕] 更新逾時狀態失敗：{error}")
 
     @discord.ui.button(
-        label="✅ 確認重啟",
+        label="確認重啟",
         style=discord.ButtonStyle.success,
         custom_id="restart_confirm",
         row=0,
@@ -325,7 +325,7 @@ class RestartConfirmView(discord.ui.View):
     ) -> None:
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message(
-                "❌ 你無權操作此按鈕。",
+                "你無權操作此按鈕。",
                 ephemeral=True,
             )
             return
@@ -333,7 +333,7 @@ class RestartConfirmView(discord.ui.View):
         self.has_interacted = True
         self.disable_all_buttons()
         await interaction.response.edit_message(
-            content="🔁 正在重啟機器人...",
+            content="正在重啟機器人...",
             view=self,
         )
         logger.info("[重啟指令] Bot 正在重啟...")
@@ -344,7 +344,6 @@ class RestartConfirmView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="restart_cancel",
         row=0,
-        emoji="❌",
     )
     async def cancel_restart(
         self,
@@ -353,7 +352,7 @@ class RestartConfirmView(discord.ui.View):
     ) -> None:
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message(
-                "❌ 你無權操作此按鈕。",
+                "你無權操作此按鈕。",
                 ephemeral=True,
             )
             return
@@ -361,7 +360,7 @@ class RestartConfirmView(discord.ui.View):
         self.has_interacted = True
         self.disable_all_buttons()
         await interaction.response.edit_message(
-            content="✅ 已取消重啟操作。",
+            content="已取消重啟操作。",
             view=self,
         )
         logger.info("[重啟指令] 已取消")

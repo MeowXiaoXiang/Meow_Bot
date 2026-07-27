@@ -1,5 +1,9 @@
-# Store text consistently for Linux containers and cross-platform development.
+# Keep repository text files consistent across Windows and Linux environments.
 * text=auto eol=lf
+
+# Windows command scripts require CRLF for compatibility.
+*.bat text eol=crlf
+*.cmd text eol=crlf
 
 # Common binary formats must never be newline-normalized.
 *.gif binary

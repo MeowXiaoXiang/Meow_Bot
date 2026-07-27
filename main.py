@@ -20,7 +20,7 @@ EMBED_FIELD_LIMIT = 1024
 class CustomHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         embed = discord.Embed(
-            title="📘 指令總覽",
+            title="指令總覽",
             description="以下是目前可用的指令列表",
             color=discord.Color.blue(),
         )
@@ -45,7 +45,7 @@ class CustomHelpCommand(commands.HelpCommand):
 
     async def send_command_help(self, command):
         embed = discord.Embed(
-            title=f"❓ 指令說明：{command.name}",
+            title=f"指令說明：{command.name}",
             description=command.help or "（沒有詳細說明）",
             color=discord.Color.green(),
         )
@@ -62,7 +62,7 @@ class CustomHelpCommand(commands.HelpCommand):
 
     async def send_error_message(self, error):
         embed = discord.Embed(
-            title="🚫 Help 指令錯誤",
+            title="Help 指令錯誤",
             description=error,
             color=discord.Color.red(),
         )
@@ -335,16 +335,16 @@ def set_logger() -> None:
 
 
 if __name__ == "__main__":
-    set_logger()
     load_dotenv()
+    set_logger()
 
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        logger.critical("❌ DISCORD_BOT_TOKEN 尚未設定，請檢查 .env 或系統環境變數")
+        logger.critical("DISCORD_BOT_TOKEN 尚未設定，請檢查 .env 或系統環境變數")
         sys.exit(1)
 
     try:
         bot.run(token)
     except Exception as error:
-        logger.opt(exception=error).critical("❗ 無法啟動 Discord Bot")
+        logger.opt(exception=error).critical("無法啟動 Discord Bot")
         sys.exit(1)
