@@ -27,7 +27,6 @@ YTDLP_EXTRACT_TIMEOUT = 30       # 解析單曲資訊超時（秒）
 YTDLP_PLAYLIST_TIMEOUT = 120     # 解析播放清單超時（秒）
 YTDLP_DOWNLOAD_TIMEOUT = 180     # 下載單曲超時（秒）
 YTDLP_PROCESS_TIMEOUT = 5        # 建立進程超時（秒）
-YTDLP_UPDATE_INTERVAL = 86400    # yt-dlp 更新檢查間隔（秒，86400 = 24 小時）
 
 # ─────────────────────────────────────────────────────────
 #  播放器 UI 設定

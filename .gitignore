@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 # music_player
-module/music_player/ffmpeg/bin/
+module/music_player/ytdlp/bin/
 temp/
 
 # Distribution / packaging

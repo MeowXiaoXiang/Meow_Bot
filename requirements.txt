@@ -4,7 +4,3 @@ aiohttp==3.14.3
 loguru==0.7.3
 Pillow==12.3.0
 python-dotenv==1.2.3
-# Keep yt-dlp flexible so runtime self-update can track extractor changes.
-yt-dlp>=2026.8.19
-# Full YouTube support with pip-installed yt-dlp needs the external JS bundle.
-yt-dlp-ejs>=0.8.0

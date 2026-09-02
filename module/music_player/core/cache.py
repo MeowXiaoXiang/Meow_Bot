@@ -32,7 +32,7 @@ class CacheManager:
         cache = CacheManager(cache_dir="./cache", window_behind=2, window_ahead=3)
         
         # 每次歌曲切換時呼叫
-        await cache.on_song_change(queue.all_songs, queue.current_index_zero_based, downloader)
+        await cache.on_song_change(queue.all_songs, queue.current_index_zero_based, client)
         
         # 檢查快取
         if cache.exists(song.id):
@@ -181,7 +181,7 @@ class CacheManager:
         self,
         queue: List["Song"],
         current_index: int,
-        downloader  # YTDLPDownloader
+        client  # YTDLPClient
     ) -> None:
         """
         歌曲切換時呼叫此方法
@@ -193,7 +193,7 @@ class CacheManager:
         Args:
             queue: 所有歌曲列表
             current_index: 當前歌曲索引（0-based）
-            downloader: YTDLPDownloader 實例
+            client: YTDLPClient 實例
         """
         if not queue or current_index < 0:
             return
@@ -209,7 +209,7 @@ class CacheManager:
         
         # 預載新歌（當 window_ahead > 0 時進行）
         if self.window_ahead > 0:
-            await self._preload_ahead(queue, current_index, downloader)
+            await self._preload_ahead(queue, current_index, client)
         else:
             logger.debug("快取管理：永久保存模式已啟用，跳過預載")
     
@@ -263,7 +263,7 @@ class CacheManager:
         self,
         queue: List["Song"],
         current_index: int,
-        downloader
+        client
     ) -> None:
         """
         背景預載接下來的歌曲
@@ -289,12 +289,12 @@ class CacheManager:
             
             # 建立背景預載任務
             task = asyncio.create_task(
-                self._preload_one(song, downloader),
+                self._preload_one(song, client),
                 name=f"preload_{song.id}"
             )
             self._preload_tasks[song.id] = task
     
-    async def _preload_one(self, song: "Song", downloader) -> None:
+    async def _preload_one(self, song: "Song", client) -> None:
         """
         預載單首歌
         
@@ -303,7 +303,7 @@ class CacheManager:
         """
         try:
             logger.debug(f"背景預載開始: {song.title}")
-            info, path = await downloader.download(song.url)
+            info, path = await client.download(song.url)
             
             if path:
                 # 只記錄快取（不修改 Song 物件）
@@ -439,7 +439,7 @@ class CacheManager:
     async def preload_window(
         self,
         queue: "MusicQueue",
-        downloader,
+        client,
     ) -> None:
         """
         預載滑動窗口內的歌曲（便利方法）
@@ -448,10 +448,10 @@ class CacheManager:
         
         Args:
             queue: MusicQueue 實例
-            downloader: YTDLPDownloader 實例
+            client: YTDLPClient 實例
         """
         await self.on_song_change(
             queue=list(queue),
             current_index=queue.current_index,
-            downloader=downloader,
+            client=client,
         )

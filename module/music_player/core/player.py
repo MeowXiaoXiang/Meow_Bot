@@ -6,7 +6,7 @@
 - 狀態追蹤（使用 PlaybackState）
 - 佇列管理（使用 MusicQueue）
 - 快取管理（使用 CacheManager）
-- 下載管理（使用 YTDLPDownloader）
+- yt-dlp 整合（使用 YTDLPClient）
 """
 
 import asyncio
@@ -18,7 +18,8 @@ from loguru import logger
 from .state import PlaybackState
 from .queue import MusicQueue, Song
 from .cache import CacheManager
-from ..downloader.yt_dlp import YTDLPDownloader
+from ..ytdlp import YTDLPClient
+from ..constants import CACHE_WINDOW_AHEAD, CACHE_WINDOW_BEHIND
 from ..utils.errors import (
     MusicError,
     PlaybackError,
@@ -38,6 +39,7 @@ class MusicPlayer:
     
     使用方式：
         player = MusicPlayer(
+            client=ytdlp_client,
             ffmpeg_path="/path/to/ffmpeg",
             cache_dir="./cache",
             on_song_change=my_callback
@@ -50,25 +52,25 @@ class MusicPlayer:
     
     def __init__(
         self,
-        ffmpeg_path: str = None,
+        client: "YTDLPClient",
+        ffmpeg_path: str,
         cache_dir: str = "./temp/music",
         loop: Optional[asyncio.AbstractEventLoop] = None,
         on_song_change: Optional[Callable[["MusicPlayer"], Awaitable[None]]] = None,
         on_song_end: Optional[Callable[[], Awaitable[None]]] = None,
         on_error: Optional[Callable[[MusicError], Awaitable[None]]] = None,
-        downloader: Optional["YTDLPDownloader"] = None,
     ):
         """
         初始化音樂播放器
         
         Args:
+            client: 已準備完成的 yt-dlp CLI client
             ffmpeg_path: FFmpeg 執行檔路徑
             cache_dir: 快取目錄路徑
             loop: 事件循環（可選，會自動取得）
             on_song_change: 歌曲切換時的回調
             on_song_end: 歌曲自然結束時的回調
             on_error: 錯誤發生時的回調
-            downloader: 下載器（可選，若提供則使用外部下載器）
         """
         self.ffmpeg_path = ffmpeg_path
         self.cache_dir = Path(cache_dir)
@@ -87,20 +89,11 @@ class MusicPlayer:
         self.state = PlaybackState()
         self.cache = CacheManager(
             cache_dir=str(self.cache_dir),
-            window_behind=2,
-            window_ahead=3
+            window_behind=CACHE_WINDOW_BEHIND,
+            window_ahead=CACHE_WINDOW_AHEAD,
         )
         
-        # 下載器（可使用外部提供的或內部建立的）
-        if downloader:
-            self.downloader = downloader
-        elif ffmpeg_path:
-            self.downloader = YTDLPDownloader(
-                download_dir=str(self.cache_dir),
-                ffmpeg_path=ffmpeg_path
-            )
-        else:
-            self.downloader = None
+        self.client = client
         
         # Discord 語音客戶端
         self._voice_client: Optional["VoiceClient"] = None
@@ -222,18 +215,14 @@ class MusicPlayer:
         # 如果沒有快取或檔案不存在，需要下載
         if not cache_path or not Path(cache_path).exists():
             logger.debug(f"下載中: {song.title}")
-            if self.downloader:
-                info, path = await self.downloader.download(song.url, song.id)
-                if not path:
-                    logger.error(f"下載失敗: {song.title}")
-                    # 不自動跳歌，讓呼叫者處理
-                    return None
-                # 下載完成：更新區域變數和 Song（只在主動下載時更新）
-                cache_path = str(path)
-                song.cached_path = str(path)
-            else:
-                logger.error("無法下載：downloader 未設定")
+            info, path = await self.client.download(song.url, song.id)
+            if not path:
+                logger.error(f"下載失敗: {song.title}")
+                # 不自動跳歌，讓呼叫者處理
                 return None
+            # 下載完成：更新區域變數和 Song（只在主動下載時更新）
+            cache_path = str(path)
+            song.cached_path = str(path)
         
         # 停止當前播放（邊界檢查：確保 voice_client 存在）
         if self._voice_client and (
@@ -280,7 +269,7 @@ class MusicPlayer:
             self.cache.on_song_change(
                 self.queue.all_songs,
                 self.queue.current_index_zero_based,
-                self.downloader
+                self.client
             )
         )
         
@@ -417,7 +406,7 @@ class MusicPlayer:
             新增的歌曲，失敗返回 None
         """
         # 提取資訊
-        info = await self.downloader.extract_info(url)
+        info = await self.client.extract_info(url)
         if not info:
             return None
         if info.get("success") is False:
@@ -459,7 +448,7 @@ class MusicPlayer:
             新增的歌曲列表
         """
         # 提取播放清單
-        entries = await self.downloader.extract_playlist(url)
+        entries = await self.client.extract_playlist(url)
         if not entries:
             return []
         

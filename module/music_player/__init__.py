@@ -6,8 +6,11 @@
 - 滑動視窗快取
 - 背景預載
 - 準確時間追蹤
-- 自動 FFmpeg 管理
+- 系統 PATH 驗證的 FFmpeg / Deno 與 managed yt-dlp binary
 """
+
+# 公開模組版本；供跨專案複製、相容性判定與問題回報使用。
+__version__ = "1.0.0"
 
 # Core
 from .core.queue import MusicQueue, Song
@@ -15,11 +18,8 @@ from .core.state import PlaybackState
 from .core.cache import CacheManager
 from .core.player import MusicPlayer
 
-# Downloader
-from .downloader.yt_dlp import YTDLPDownloader
-
-# FFmpeg
-from .ffmpeg.manager import FFmpegManager, get_ffmpeg_path
+# yt-dlp
+from .ytdlp import YTDLPBootstrapError, YTDLPClient, YTDLPManager
 
 # UI
 from .ui.embeds import EmbedBuilder
@@ -48,7 +48,6 @@ from .constants import (
     YTDLP_EXTRACT_TIMEOUT,
     YTDLP_PLAYLIST_TIMEOUT,
     YTDLP_DOWNLOAD_TIMEOUT,
-    YTDLP_UPDATE_INTERVAL,
     # UI
     PLAYLIST_PER_PAGE,
     PAGINATION_VIEW_TIMEOUT,
@@ -67,17 +66,18 @@ from .constants import (
 )
 
 __all__ = [
+    # Module metadata
+    "__version__",
     # Core
     "MusicQueue",
     "Song", 
     "PlaybackState",
     "CacheManager",
     "MusicPlayer",
-    # Downloader
-    "YTDLPDownloader",
-    # FFmpeg
-    "FFmpegManager",
-    "get_ffmpeg_path",
+    # yt-dlp
+    "YTDLPBootstrapError",
+    "YTDLPClient",
+    "YTDLPManager",
     # UI
     "EmbedBuilder",
     "MusicPlayerView",
@@ -101,7 +101,6 @@ __all__ = [
     "YTDLP_EXTRACT_TIMEOUT",
     "YTDLP_PLAYLIST_TIMEOUT",
     "YTDLP_DOWNLOAD_TIMEOUT",
-    "YTDLP_UPDATE_INTERVAL",
     "PLAYLIST_PER_PAGE",
     "PAGINATION_VIEW_TIMEOUT",
     "PROGRESS_BAR_LENGTH",

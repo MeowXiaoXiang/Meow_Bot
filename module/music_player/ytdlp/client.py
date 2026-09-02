@@ -1,5 +1,5 @@
 """
-yt-dlp 非同步下載器
+yt-dlp 非同步 Client
 
 使用 asyncio.create_subprocess_exec 實現純 async 操作：
 - 完全不阻塞事件循環
@@ -27,18 +27,22 @@ from ..constants import (
 )
 
 
-class YTDLPDownloader:
+class YTDLPClient:
     """
-    yt-dlp 非同步下載器
+    yt-dlp 非同步 Client
     
     使用方式：
-        downloader = YTDLPDownloader(cache_dir="./cache", ffmpeg_path="/path/to/ffmpeg")
+        client = YTDLPClient(
+            ytdlp_path="/managed/path/yt-dlp",
+            ffmpeg_path="/path/to/ffmpeg",
+            cache_dir="./cache",
+        )
         
         # 提取單曲資訊
-        info = await downloader.extract_info("https://www.youtube.com/watch?v=xxx")
+        info = await client.extract_info("https://www.youtube.com/watch?v=xxx")
         
         # 下載
-        info, path = await downloader.download("https://www.youtube.com/watch?v=xxx")
+        info, path = await client.download("https://www.youtube.com/watch?v=xxx")
     """
     
     # 錯誤模式對應表
@@ -81,18 +85,20 @@ class YTDLPDownloader:
     
     def __init__(
         self,
+        ytdlp_path: str | Path,
+        ffmpeg_path: str | Path,
         download_dir: str = None,
         cache_dir: str = None,
-        ffmpeg_path: str = None,
         progress_callback: Optional[Callable[[str, float], None]] = None
     ):
         """
         初始化下載器
         
         Args:
+            ytdlp_path: manager 準備完成的 yt-dlp executable 絕對路徑
+            ffmpeg_path: 系統 PATH 驗證過的 FFmpeg executable 絕對路徑
             download_dir: 下載目錄路徑（與 cache_dir 互為別名）
             cache_dir: 快取目錄路徑（與 download_dir 互為別名）
-            ffmpeg_path: FFmpeg 執行檔路徑
             progress_callback: 可選的進度回調函數 (song_id, percentage)
         """
         # 支援兩種參數名稱
@@ -100,10 +106,13 @@ class YTDLPDownloader:
         self.cache_dir = Path(dir_path)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        self.ffmpeg_path = ffmpeg_path
+        self.ytdlp_path = str(Path(ytdlp_path).resolve())
+        self.ffmpeg_path = str(Path(ffmpeg_path).resolve())
         self.progress_callback = progress_callback
         
-        logger.debug(f"YTDLPDownloader 初始化: cache_dir={dir_path}")
+        logger.debug(
+            f"YTDLPClient 初始化: ytdlp_path={self.ytdlp_path}, cache_dir={dir_path}"
+        )
     
     # === 公開方法 ===
     
@@ -123,7 +132,7 @@ class YTDLPDownloader:
             歌曲資訊字典，失敗返回 None 或錯誤字典
         """
         args = [
-            "yt-dlp",
+            self.ytdlp_path,
             "--dump-json",
             "--quiet",
             "--no-warnings",
@@ -182,7 +191,7 @@ class YTDLPDownloader:
             歌曲資訊列表，失敗返回 None
         """
         args = [
-            "yt-dlp",
+            self.ytdlp_path,
             "--flat-playlist",
             "--dump-json",
             "--quiet",
@@ -238,50 +247,50 @@ class YTDLPDownloader:
         self,
         url: str,
         song_id: Optional[str] = None,
-        timeout: int = YTDLP_DOWNLOAD_TIMEOUT
+        timeout: int = YTDLP_DOWNLOAD_TIMEOUT,
+        info: Optional[dict] = None,
     ) -> Tuple[Optional[dict], Optional[Path]]:
         """
         下載影片並轉換為 opus 格式
         
         Args:
             url: 影片 URL
-            song_id: 可選的歌曲 ID（用於快取檢查，若不提供會先提取資訊）
+            song_id: 可選的歌曲 ID（用於快取檢查與輸出檔名）
             timeout: 下載超時時間（秒）
+            info: 已解析的歌曲資訊；提供後不會再次執行 extract_info
         
         Returns:
             (歌曲資訊, 檔案路徑) 或 (錯誤資訊, None)
         """
-        # 如果沒有提供 song_id，先提取資訊
+        if info is not None and info.get("success") is False:
+            return info, None
+
+        # 已有解析結果時直接使用其 ID；否則只在缺少 ID 時解析一次。
         if song_id is None:
-            info = await self.extract_info(url)
-            if not info:
-                return None, None
-            if info.get("success") is False:
-                return info, None
+            if info is None:
+                info = await self.extract_info(url)
+                if not info:
+                    return None, None
+                if info.get("success") is False:
+                    return info, None
             song_id = info["id"]
-        else:
-            info = None
+        elif info is None:
+            # 保留既有 API 行為：只提供 song_id 時仍回傳完整歌曲資訊。
+            info = await self.extract_info(url)
+            if not info or info.get("success") is False:
+                return info, None
         
         opus_path = self.cache_dir / f"{song_id}.opus"
         
         # 已有快取，直接回傳
         if opus_path.exists():
             logger.debug(f"快取已存在: {song_id}")
-            # 如果還沒有 info，需要提取
-            if info is None:
-                info = await self.extract_info(url)
             return info, opus_path
-        
-        # 如果還沒有 info，提取它
-        if info is None:
-            info = await self.extract_info(url)
-            if not info or info.get("success") is False:
-                return info, None
         
         # 下載
         output_template = str(self.cache_dir / f"{song_id}.%(ext)s")
         args = [
-            "yt-dlp",
+            self.ytdlp_path,
             "--format", "bestaudio/best",
             "--output", output_template,
             "--no-playlist",
@@ -318,7 +327,7 @@ class YTDLPDownloader:
             if not opus_path:
                 return None, None
             
-            logger.debug(f"下載完成: {info.get('title', song_id)}")
+            logger.debug(f"下載完成: {info.get('title', song_id) if info else song_id}")
             return info, opus_path
             
         except asyncio.TimeoutError:

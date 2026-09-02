@@ -75,10 +75,9 @@ class EmbedBuilder:
             # 作者
             embed.set_author(name=song.uploader, url=song.uploader_url or None)
             
-            # 標題（含編號）
-            title_text = f"{index}. " if index else ""
-            title_text += song.title
-            embed.description = f"[{title_text}]({song.url})"
+            # 標題連結不含編號，讓編號維持為可閱讀的純文字。
+            index_prefix = f"{index}. " if index else ""
+            embed.description = f"{index_prefix}[{song.title}]({song.url})"
             
             # 狀態欄位
             embed.add_field(
@@ -116,7 +115,7 @@ class EmbedBuilder:
             is_playing=player.is_playing,
             is_looping=player.loop,
             current_time=player.state.current_position,
-            index=player.queue.current_index
+            index=player.queue.current_index_one_based,
         )
     
     # === 清單相關 ===
