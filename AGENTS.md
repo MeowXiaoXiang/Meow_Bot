@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-- This is a Discord bot built with Python 3.13 and discord.py 2.x.
+- This is a Discord bot built with Python 3.14 and discord.py 2.x.
 - Production runs in Docker on Linux. Windows is a local development environment only.
 - Keep dependency/runtime upgrades separate from unrelated architecture refactors. Explain and discuss worthwhile hardening before including it in an upgrade task.
 - Do not commit changes unless the user explicitly asks for a commit.
@@ -18,7 +18,7 @@
 
 - `main.py` creates the bot, loads cogs, registers error handlers, and starts the process.
 - `cogs/` contains Discord command modules. Each loadable cog must expose `async def setup(bot)`.
-- `module/music_player/` contains reusable player, queue, downloader, FFmpeg, UI, and error-handling code.
+- `module/music_player/` contains reusable player, queue, yt-dlp manager/client, FFmpeg integration, UI, and error-handling code.
 - The music player uses asyncio locks. Avoid nested acquisition of the same lock and keep slow network or subprocess work outside critical sections.
 - Preserve the direct `commands.Bot` style in `main.py` unless lifecycle restructuring is explicitly in scope. If startup work must move out of `on_ready`, discuss the behavioral reason and tradeoffs first.
 

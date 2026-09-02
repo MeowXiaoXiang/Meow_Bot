@@ -3,6 +3,7 @@ import unittest
 
 from cogs.management import ManagementCommand
 from main import bot
+from module.music_player import __version__ as music_player_version
 
 
 class MeowBotConfigurationTests(unittest.TestCase):
@@ -27,6 +28,9 @@ class MeowBotConfigurationTests(unittest.TestCase):
         interaction = SimpleNamespace(guild=None, user=object())
 
         self.assertFalse(ManagementCommand._is_admin(interaction))
+
+    def test_music_player_exposes_its_version(self) -> None:
+        self.assertEqual(music_player_version, "1.0.0")
 
 
 if __name__ == "__main__":

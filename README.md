@@ -1,9 +1,9 @@
 # Meow_Bot
 
-![Python 3.13](https://img.shields.io/badge/Python-3.13-blue?logo=python)
+![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python)
 ![discord.py 2.7](https://img.shields.io/badge/discord.py-2.7-5865F2?logo=discord&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Version v1.2](https://img.shields.io/badge/Version-v1.2-orange)
+![Version v1.3](https://img.shields.io/badge/Version-v1.3-orange)
 
 ## 介紹
 
@@ -32,9 +32,9 @@
 
 ### 前置需求
 
-- Python 3.13
-- FFmpeg（音樂播放需要，Windows 會自動下載）
-- Deno 2.3+ 或 Node.js 22+（本機若需要完整 YouTube 支援時建議安裝）
+- Python 3.14
+- FFmpeg（音樂播放與轉檔需要，必須位於 PATH）
+- Deno 2.3+（完整 YouTube 支援需要，必須位於 PATH）
 - Discord Bot Token
 
 ### 安裝步驟
@@ -64,6 +64,25 @@
    python -m pip install -r requirements.txt
    ```
 
+   Windows 可使用 winget 安裝音樂功能需要的系統工具，安裝後請重新開啟終端機：
+
+   ```powershell
+   winget install -e --id Gyan.FFmpeg.Shared
+   winget install -e --id DenoLand.Deno
+   ```
+
+   `Gyan.FFmpeg.Shared` 為 Windows x64 套件；Windows on ARM 使用者請改用能提供 `ffmpeg` PATH command 的相容發行版。
+
+   Linux 手動部署時，請依發行版的套件管理方式安裝 FFmpeg 與 Deno，並在啟動前確認下列指令均可執行：
+
+   ```bash
+   ffmpeg -version
+   deno --version
+   ```
+
+   Bot 不會下載或設定 FFmpeg、Deno 或 Node.js；本專案只支援 Deno，沒有 Node.js fallback。
+   Music Cog 載入時也會確認 FFmpeg 提供 `libopus` encoder；沒有它會直接停用音樂模組，避免到播放時才失敗。
+
 4. **設定環境變數**
 
    建立 `.env` 檔案：
@@ -92,7 +111,11 @@ docker compose logs -f
 
 記得在 `compose.yml` 同目錄建立 `.env` 檔案設定 Token。
 
-Docker 映像會依目標架構自動安裝 `Deno 2.9.0`（支援 `amd64` / `arm64`），供 `yt-dlp` / `yt-dlp-ejs` 執行 JavaScript 萃取流程使用。Deno 版本可透過 `DENO_VERSION` build arg 覆寫。
+Docker 映像以 Python 3.14 與 Debian trixie 為基底，透過 Debian APT 安裝 FFmpeg；Deno 則從官方的 multi-architecture binary image 複製，預設為 `2.9.6`，支援 `amd64` / `arm64`。兩者都會在 image build 階段驗證可從 PATH 執行；Deno 供 yt-dlp 的 JavaScript 萃取流程使用。若有必要，可用 `docker compose build --build-arg DENO_VERSION=<版本>` 覆寫 Deno 版本。
+
+Compose 不再指定公開 DNS，會使用 Docker 與宿主環境的預設 DNS 設定。
+
+yt-dlp 本身由 Bot 管理：第一次載入 Music Cog 時會依作業系統與架構下載官方 nightly standalone binary；之後每次載入會檢查更新。Binary 固定保存於 `module/music_player/ytdlp/bin/`，Compose 會以 bind mount 保留它，讓 container recreate 後仍可使用既有版本。
 
 ## 指令列表
 
@@ -134,8 +157,7 @@ Meow_Bot/
     └── music_player/      # 音樂播放器核心
         ├── core/         # 播放器核心邏輯
         ├── ui/           # UI 元件（按鈕、嵌入）
-        ├── downloader/   # yt-dlp 下載器
-        ├── ffmpeg/       # FFmpeg 管理
+        ├── ytdlp/        # yt-dlp manager、CLI client 與 managed binary
         └── utils/        # 工具函數
 ```
 
@@ -151,10 +173,11 @@ Meow_Bot/
 
 ## 版本說明
 
-- 專案目前以 **Python 3.13** 為目標版本；Docker 會跟隨 `python:3.13-slim` 取得最新 3.13 patch
-- 依賴已更新為與 **Python 3.13** 相容的版本，音樂功能改以 `discord.py[voice]` 安裝語音相依
-- 在 Python 3.13 上，`discord.py[voice]` 會一併解析 voice 需要的 `audioop-lts` / `davey` 等相依
-- Bot 會保留執行期 `yt-dlp` 自動更新設計；音樂功能使用時至多每 24 小時以 pip dry-run 檢查一次差異，只有發現新版才安裝，正式更新失敗時才退回 `yt-dlp -U`
+- 專案目前以 **Python 3.14** 為目標版本；Docker 會跟隨 `python:3.14-slim-trixie` 取得最新 3.14 patch
+- 依賴已確認與 **Python 3.14** 相容，音樂功能以 `discord.py[voice]` 安裝語音相依
+- 在 Python 3.14 上，`discord.py[voice]` 會一併解析 voice 需要的 `audioop-lts` / `davey` 等相依
+- Bot 使用官方 nightly yt-dlp standalone binary；Music Cog 載入時會更新它。更新失敗但既有 binary 可用時，音樂功能會繼續啟動；只有沒有可用 binary 且首次下載失敗時才會停用 Music Cog
+- 播放器模組目前版本為 **1.0.0**，可由 `module.music_player.__version__` 取得；跨專案複製時請依其公開匯出介面整合
 
 ### 音樂播放器設定
 

@@ -12,7 +12,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from loguru import logger
 
-BOT_VERSION = "v1.2"
+BOT_VERSION = "v1.3"
 EMBED_DESCRIPTION_LIMIT = 4096
 EMBED_FIELD_LIMIT = 1024
 
