@@ -14,9 +14,7 @@ services:
       - /etc/timezone:/etc/timezone:ro
       - ./logs:/app/logs
       - ./temp:/app/temp
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+      - ./module/music_player/ytdlp/bin:/app/module/music_player/ytdlp/bin
     restart: unless-stopped
     tty: true
     logging:

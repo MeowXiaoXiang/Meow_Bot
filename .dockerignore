@@ -13,4 +13,4 @@ __pycache__/
 
 logs/
 temp/
-module/music_player/ffmpeg/bin/
+module/music_player/ytdlp/bin/

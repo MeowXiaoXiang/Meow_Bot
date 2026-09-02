@@ -1,42 +1,34 @@
-# 使用 Python 3.13 的官方 Docker 映像作為基礎映像
-FROM python:3.13-slim
+ARG PYTHON_VERSION=3.14
+ARG DENO_VERSION=2.9.6
 
-ARG DENO_VERSION=2.9.0
-ARG TARGETARCH
+# 使用官方 Deno binary image，提供已驗證的 amd64 / arm64 standalone binary。
+FROM denoland/deno:bin-${DENO_VERSION} AS deno
 
-# 安裝執行期依賴：
-# - ffmpeg: Discord 音樂播放與轉檔需要
-# - deno: yt-dlp-ejs/yt-dlp 的 JavaScript runtime，改善 YouTube 支援
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libopus0 \
-    curl \
-    unzip \
-    && case "${TARGETARCH}" in \
-        amd64) DENO_ARCH="x86_64" ;; \
-        arm64) DENO_ARCH="aarch64" ;; \
-        *) echo "Unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}-unknown-linux-gnu.zip" -o /tmp/deno.zip \
-    && unzip /tmp/deno.zip -d /usr/local/bin \
-    && chmod +x /usr/local/bin/deno \
-    && rm /tmp/deno.zip \
+# 使用 Python 官方 Debian trixie slim 映像作為執行期基底。
+FROM python:${PYTHON_VERSION}-slim-trixie
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# FFmpeg（包含 libopus encoder）由 Debian 套件庫提供；Deno 由官方 binary stage 複製。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# 設定工作目錄
+COPY --from=deno /deno /usr/local/bin/deno
+
+# 在 image build 階段確認 Music Cog 需要的兩項外部工具皆可從 PATH 執行。
+RUN deno --version \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libopus'
+
 WORKDIR /app
 
-# 把 requirements.txt 複製到 Docker 容器中
 COPY requirements.txt .
 
-# 先更新 pip，避免較舊安裝器在新 Python 版本上抓不到合適 wheel
-RUN python -m pip install --upgrade pip
+# 保持 pip 為可支援新 Python wheel 的版本，再安裝鎖定的執行期依賴。
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
-# 安裝 Python 依賴項
-RUN python -m pip install --no-cache-dir -r requirements.txt
-
-# 將專案代碼複製到 Docker 容器中
 COPY . .
 
-# Docker 容器啟動時，運行 main.py
 CMD ["python", "main.py"]
