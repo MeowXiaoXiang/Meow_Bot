@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from cogs.management import ManagementCommand
-from main import bot
+from main import bot, set_logger
 from module.music_player import __version__ as music_player_version
 
 
@@ -31,6 +32,15 @@ class MeowBotConfigurationTests(unittest.TestCase):
 
     def test_music_player_exposes_its_version(self) -> None:
         self.assertEqual(music_player_version, "1.0.0")
+
+    def test_debug_mode_ignores_surrounding_whitespace(self) -> None:
+        with (
+            patch("main.os.getenv", return_value=" true "),
+            patch("main.logger") as logger,
+        ):
+            set_logger()
+
+        self.assertEqual(logger.add.call_args_list[0].kwargs["level"], "DEBUG")
 
 
 if __name__ == "__main__":

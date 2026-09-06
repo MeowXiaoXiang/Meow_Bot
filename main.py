@@ -320,7 +320,7 @@ async def on_app_command_error(
 def set_logger() -> None:
     """設定 Loguru 的輸出行為（終端機 & 檔案）"""
     logger.remove()
-    debug_mode = os.getenv("DEBUG", "").lower() in ("true", "1", "yes")
+    debug_mode = os.getenv("DEBUG", "").strip().lower() in ("true", "1", "yes")
 
     logger.add(sys.stdout, level="DEBUG" if debug_mode else "INFO", colorize=True)
     logger.add(

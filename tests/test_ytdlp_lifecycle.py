@@ -42,6 +42,37 @@ class YTDLPManagerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             YTDLPManager._checksum_for_asset("abc123  yt-dlp_linux", "yt-dlp.exe")
 
+    async def test_checksum_mismatch_preserves_existing_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = YTDLPManager(temp_dir)
+            executable = Path(temp_dir) / "yt-dlp.exe"
+            executable.write_bytes(b"known-good binary")
+
+            async def download_mismatched_file(_: object, __: str, destination: Path) -> str:
+                destination.write_bytes(b"unverified binary")
+                return "0" * 64
+
+            with (
+                patch(
+                    "module.music_player.ytdlp.manager.aiohttp.ClientSession",
+                ),
+                patch.object(
+                    manager,
+                    "_download_bytes",
+                    new=AsyncMock(return_value=b"1" * 64 + b"  yt-dlp.exe"),
+                ),
+                patch.object(
+                    manager,
+                    "_download_file",
+                    side_effect=download_mismatched_file,
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "SHA-256"):
+                    await manager._download_and_install("yt-dlp.exe", executable)
+
+            self.assertEqual(executable.read_bytes(), b"known-good binary")
+            self.assertFalse((Path(temp_dir) / "yt-dlp.exe.part").exists())
+
     async def test_first_download_failure_raises_bootstrap_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = YTDLPManager(temp_dir)
